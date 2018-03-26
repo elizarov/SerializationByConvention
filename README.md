@@ -1,6 +1,6 @@
 # Serialization by Convention
 
-This document details the alternative approach to Kotlin Serialization that does not rely of pre-defined interfaces
+This document details the git remote add origin https://github.com/elizarov/SerializationByConvention.git
 like `KInput` and `KOutput`, but adapts to arbitrary input/output APIs via extensions and by convention.
 
 As you will see, some things become simpler and get more performance, while others are getting more complicated. 
@@ -10,26 +10,26 @@ It is designed to outline the general idea, and it is not a final design.
 
 ## Table of contents
 
-* [Introduction](#Introduction)
-* [Simple binary serialization](#Simple-binary-serialization)
-  * [Showcase](#Showcase)
-  * [Digression on type classes](#Digression-on-type-classes)
-  * [Simple binary deserialization](#Simple-binary-deserialization)
-  * [Serializing object graphs](#Serializing-object-graphs)
-  * [Nullable types](#Nullable-types)    
-  * [Automatically derived implementations](#Automatically-derived-implementations)  
-  * [Serializing collections and arrays](#Serializing-collections-and-arrays) 
-* [Serializing to maps](#Serializing-to-maps)
-  * [Map primer](#Map-primer)
-  * [Reading objects from DB](#Reading-objects-from-DB)
-  * [Alternative storage types](#Alternative-storage-types)
-  * [Configuration graph from Properties](#Configuration-graph-from-Properties)
-  * [Nullable configuration properties](#Nullable-configuration-properties)
-  * [Child operator](#Child-operator)
-  * [Enums](#Enums)
-  * [Optional properties](#Optional-properties)   
-* [Exotic formats](#Exotic-formats)  
-  * [Fixed width text files](#Fixed-width-text-files)
+* [Introduction](#introduction)
+* [Simple binary serialization](#simple-binary-serialization)
+  * [Showcase](#showcase)
+  * [Digression on type classes](#digression-on-type-classes)
+  * [Simple binary deserialization](#simple-binary-deserialization)
+  * [Serializing object graphs](#serializing-object-graphs)
+  * [Nullable types](#nullable-types)    
+  * [Automatically derived implementations](#automatically-derived-implementations)  
+  * [Serializing collections and arrays](#serializing-collections-and-arrays) 
+* [Serializing to maps](#serializing-to-maps)
+  * [Map primer](#map-primer)
+  * [Reading objects from DB](#reading-objects-from-db)
+  * [Alternative storage types](#alternative-storage-types)
+  * [Configuration graph from Properties](#configuration-graph-from-properties)
+  * [Nullable configuration properties](#nullable-configuration-properties)
+  * [Child operator](#child-operator)
+  * [Enums](#enums)
+  * [Optional properties](#optional-properties)   
+* [Exotic formats](#exotic-formats)  
+  * [Fixed width text files](#fixed-width-text-files)
                      
 ## Introduction
 
@@ -98,7 +98,7 @@ when the actual type is know only at runtime, and, as a corollary (due to type e
 to support generic types. So we take a slightly indirect path to having compiler implement that function for us.  
 
 > A use-case for such a genericity is shown in 
-[Serializing collections and arrays](#Serializing-collections-and-arrays) section. 
+[Serializing collections and arrays](#serializing-collections-and-arrays) section. 
 
 We start by defining a "writer" serialization interface with the prototype of that function 
 that the compiler is going to implement for us:
@@ -813,7 +813,7 @@ fun ResultSet.readClob(name: String): String =
 
 > Note how this function is annotated with `@SerializationQualifier(Clob::class)` so it is resolved only for
 properties that are marked with `@Clob` annotation. An alternative design would be to mark `Clob` with a 
-meta-annotation, but that is not look flexible enough. See [Fixed width text files](#Fixed-width-text-files)
+meta-annotation, but that is not look flexible enough. See [Fixed width text files](#fixed-width-text-files)
 for an example where `@SerializationQualifier` annotation is used in a more powerful way.
 
 Now we can use `@Clob` annotation on the corresponding data model property:
@@ -949,7 +949,7 @@ and the start parsing it, in which can checking for a child would be efficient.
 This implementation is sufficient for our exposition, though. 
 
 Then we define a generic reading function for nullable types in a similar way as we did
-in [Nullable types](#Nullable-types) section, but with an additional `name: String` parameter:
+in [Nullable types](#nullable-types) section, but with an additional `name: String` parameter:
 
 ```kotlin
 @InjectSerializer
@@ -983,7 +983,7 @@ class Connection(val host: String?, val port: Int)
 There is no `readXXX` function that returns `String?`. We can always define one for `String?`, but this
 approach is not composable as we'll have to repeat this definition for every kind of primitive that we
 are supporting in our serialization format. We'd like an have a solution that is based on
-[Automatically derived implementations](#Automatically-derived-implementations), but compiler cannot
+[Automatically derived implementations](#automatically-derived-implementations), but compiler cannot
 derive a ready-to-use implementation of `NodeReader<String>` based on `fun readString(name: String): String`,
 because of its `name: String` parameter.
 
