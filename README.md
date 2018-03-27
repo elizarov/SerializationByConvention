@@ -36,7 +36,8 @@ It is designed to outline the general idea, and it is not a final design.
   * [Arbitrary order of keys](#arbitrary-order-of-keys)
   * [Lists as JSON arrays](#lists-as-JSON-arrays)
   * [XML and friends](#xml-and-friends)
-  * [Protobuf and friends](#protobuf-and-friends)     
+  * [Protobuf and friends](#protobuf-and-friends)
+  * [Skipping missing properties](#skipping-missing-properties)
 * [Exotic formats](#exotic-formats)  
   * [Fixed width text files](#fixed-width-text-files)
 * [Summary](#summary)
@@ -1698,6 +1699,20 @@ message Person {
 
 > You can find worked out example of code from this section in [src/Proto.kt](src/Proto.kt)
 
+### Skipping missing properties
+
+Reading Protobuf is possible using `nextRead` operator with the following signature:
+
+```
+@SerializationQualifier(Tag::class)
+fun <T> ProtoInput.nextRead(): Int
+```
+
+The value of `tag` property from `@Tag` qualifier annotation "spills out" into the result
+of `nextRead` function. The result is `-1` when the end is reached.
+
+TBD
+
 ## Exotic formats
 
 This chapter we'll cover some exotic format that are not widely used, yet useful in certain niche applications
@@ -1817,7 +1832,9 @@ Here `I` is an input type, and `O` is an output type.
                                        
 * `T` in `readXXX` and `writeXXX` operator function can be an arbitrary type and those functions can be generic
   with complex dependencies between their generic parameter types and `T`.                                       
-* `R` in `nextRead()` operator function can be either `String?` or `Int`.                                                     
+* `R` in `nextRead()` operator function works like the last explicit or implicit qualifier parameter with some
+  built-in magic to indicate last field. Reference types must be nullable (like `String?`) and use `null` to signal
+  the end, integer types use `-1` as a signal.
                                                           
 ### Qualifiers 
 
