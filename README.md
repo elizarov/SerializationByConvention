@@ -1563,20 +1563,20 @@ interface W<T> {
 
 ### Operator functions
 
-| Signature                                    | Description                                         | Example
-| -------------------------------------------  | --------------------------------------------------- | -------
-| `I.readXXX([qualifiers]): T`                 | Reads typed value from the input `I`                | [Showcase](#showcase)
-| `O.writeXXX([qualifiers], value: T)`         | Writes typed value to the output `O`                | [Simple binary deserialization](#simple-binary-deserialization)
-| `IO.child(qualifiers): IO`                   | Narrows input/output type `IO` with qualifiers      | [Child operator](#child-operator)
-| `IO.child(qualifiers, block: IO.() -> T): T` | -- same --                                          | [XML and friends](#xml-and-friends)  
-| `I.canRead([qualifiers]): Boolean`           | Checks if input `I` has a value to read             | [Optional properties](#optional-properties) 
-| `O.beginWrite([qualifiers])`                 | Begins writing composite object                     | [Writing keys and values to a stream](#writing-keys-and-values-to-a-stream) 
-| `O.nextWrite([qualifiers])`                  | Continues writing composite object (between fields) | [Writing keys and values to a stream](#writing-keys-and-values-to-a-stream) 
-| `O.endWrite([qualifiers])`                   | Ends writing composite object                       | [Writing keys and values to a stream](#writing-keys-and-values-to-a-stream) 
-| `I.beginRead([qualifiers])`                  | Begins reading composite object                     | [Reading keys and values from a stream](#reading-keys-and-values-from-a-stream) 
-| `I.nextRead([qualifiers])`                   | Continues reading composite object (between fields) | [Reading keys and values from a stream](#reading-keys-and-values-from-a-stream) 
-| `I.nextRead([qualifiers]): R`                | Returns next property to read                       | [Arbitrary order of keys](#arbitrary-order-of-keys) 
-| `I.endRead([qualifiers])`                    | Ends reading composite object                       | [Reading keys and values from a stream](#reading-keys-and-values-from-a-stream) 
+| Signature                                    | Description / Example                                       
+| -------------------------------------------  | ---------------------
+| `I.readXXX([qualifiers]): T`                 | Reads typed value from the input `I`                <br> [Showcase](#showcase)
+| `O.writeXXX([qualifiers], value: T)`         | Writes typed value to the output `O`                <br> [Simple binary deserialization](#simple-binary-deserialization)
+| `IO.child(qualifiers): IO`                   | Narrows input/output type `IO` with qualifiers      <br> [Child operator](#child-operator)
+| `IO.child(qualifiers, block: IO.() -> T): T` | -- same --                                          <br> [XML and friends](#xml-and-friends)  
+| `I.canRead([qualifiers]): Boolean`           | Checks if input `I` has a value to read             <br> [Optional properties](#optional-properties) 
+| `O.beginWrite([qualifiers])`                 | Begins writing composite object                     <br> [Writing keys and values to a stream](#writing-keys-and-values-to-a-stream) 
+| `O.nextWrite([qualifiers])`                  | Continues writing composite object (between fields) <br> [Writing keys and values to a stream](#writing-keys-and-values-to-a-stream) 
+| `O.endWrite([qualifiers])`                   | Ends writing composite object                       <br> [Writing keys and values to a stream](#writing-keys-and-values-to-a-stream) 
+| `I.beginRead([qualifiers])`                  | Begins reading composite object                     <br> [Reading keys and values from a stream](#reading-keys-and-values-from-a-stream) 
+| `I.nextRead([qualifiers])`                   | Continues reading composite object (between fields) <br> [Reading keys and values from a stream](#reading-keys-and-values-from-a-stream) 
+| `I.nextRead([qualifiers]): R`                | Returns next property to read                       <br> [Arbitrary order of keys](#arbitrary-order-of-keys) 
+| `I.endRead([qualifiers])`                    | Ends reading composite object                       <br> [Reading keys and values from a stream](#reading-keys-and-values-from-a-stream) 
                                        
 * `T` in `readXXX` and `writeXXX` operator function can be an arbitrary type and those functions can be generic
   with complex dependencies between their generic parameter types and `T`.                                       
