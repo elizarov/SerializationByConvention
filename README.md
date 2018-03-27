@@ -11,6 +11,7 @@ It is designed to outline the general idea, and it is not a final design.
 ## Table of contents
 
 * [Introduction](#introduction)
+  * [Goals](#goals)
 * [Simple binary serialization](#simple-binary-serialization)
   * [Showcase](#showcase)
   * [Digression on type classes](#digression-on-type-classes)
@@ -31,7 +32,8 @@ It is designed to outline the general idea, and it is not a final design.
 * [Streaming JSON](#streaming-json)
   * [Writing keys and values to a stream](#writing-keys-and-values-to-a-stream)
   * [Reading keys and values from a stream](#reading-keys-and-values-from-a-stream)
-  * [Arbitrary order of keys](#arbitrary-order-of-keys)     
+  * [Arbitrary order of keys](#arbitrary-order-of-keys)
+  * [XML and friends](#xml-and-friends)     
 * [Exotic formats](#exotic-formats)  
   * [Fixed width text files](#fixed-width-text-files)
 * [Summary](#summary)
@@ -72,6 +74,24 @@ A single class can be read (deserialized) into an object from a database row, tr
 application in JSON (serialized on a backend and deserialized in a frontend), 
 stored in some binary format in its cache and presented in table on a screen (which can be also implemented
 as an instance of serialization).
+
+### Goals
+
+Design goals are:
+
+* Cross-platform (JVM, JS, Native).
+* Reflection is optional (most use-cases shall work without it), static types only by default.
+* Serialization format agnostic.
+* Simple things should be simple, complex and exotic things shall be supported.
+* High-performance, but see above &mdash; it is Ok is performance sensitive code need to be more complicated, 
+  but it is not Ok if clarity of all the code suffers.
+* Clear way to plug your own serialization format.  
+* Most common formats should be supported out-of-the box (JSON and Protobuf for sure).  
+  
+Non-goals:
+
+* Out-of-the box support for variety of standard formats.  
+* Support arbitrary object graphs with cycles.
                   
 ## Simple binary serialization
 
@@ -1371,6 +1391,72 @@ recent value of a duplicated property is used. But what if there is a requiremen
 
 > You can find worked out example of code from this section in [src/ArbitraryOrder.kt](src/ArbitraryOrder.kt)
 
+### XML and friends
+
+Write XML, unlike JSON, requires us to tags around property value, so we will use alternative signature of
+operator function `child` that takes a block of code as the last parameter:
+
+```kotlin
+inline fun <T> XmlOutput.child(name: String, block: XmlOutput.() -> T): T {
+    print("<$name>")
+    return block().also {
+        println("</$name>")
+    }
+}
+```
+
+> Implementation of the format is free to pass a different instance of the output type into the block, but we
+are not using this ability in this example.
+
+The other difference is that we are going to use _qualified_ `beginWrite` and `endWrite` operators and get rid of 
+`nextWrite` which we would not need for XML:
+
+```kotlin
+fun XmlOutput.beginWrite(name: String) { /* ... */ }
+fun XmlOutput.endWrite(name: String) { /* ... */ }
+```
+
+Here, qualifiers are taken for the serializable class itself and `name: String` is substituted
+with serial name of the class which is equal to the simple class name by default:
+
+```kotlin
+object __PersonXmlWriter : XmlWriter<Person> {
+    override fun XmlOutput.write(obj: Person) {
+        beginWrite("Person")
+        child("name") { writeValue(obj.name) }
+        child("age") { writeValue(obj.age) }
+        child("born") { write(obj.born, __DateXmlWriter) }
+        child("dead") { write(obj.dead, __DateXmlWriter) }
+        endWrite("Person")
+    }
+}
+```
+
+All in all, we are able to produce this maximally verbose XML output:
+
+```xml
+<Person>
+    <name>Elvis</name>
+    <age>42</age>
+    <born>
+        <Date>
+            <year>1935</year>
+            <month>1</month>
+            <day>8</day>
+        </Date>
+    </born>
+    <dead>
+        <Date>
+            <year>1977</year>
+            <month>8</month>
+            <day>16</day>
+        </Date>
+    </dead>
+</Person>
+```
+
+> You can find worked out example of code from this section in [src/WritingXml.kt](src/WritingXml.kt)
+
 ## Exotic formats
 
 This chapter we'll cover some exotic format that are not widely used, yet useful in certain niche applications
@@ -1477,22 +1563,24 @@ interface W<T> {
 
 ### Operator functions
 
-| Name            | Signature                                | Description                                         | Example
-| --------------- | ---------------------------------------  | --------------------------------------------------- | -------
-| `read`          | `fun I.readXXX([qualifiers]): T`         | Reads typed value from the input `I`                | [Showcase](#showcase)
-| `write`         | `fun O.writeXXX([qualifiers], value: T)` | Writes typed value to the output `O`                | [Simple binary deserialization](#simple-binary-deserialization)
-| `child`         | `fun IO.child(qualifiers): IO`           | Narrows input/output type `IO` with qualifiers      | [Child operator](#child-operator)
-| `canRead`       | `fun I.canRead([qualifiers]): Boolean`   | Checks if input `I` has a value to read             | [Optional properties](#optional-properties) 
-| `beginWrite`    | `fun O.beginWrite([qualifiers])`         | Begins writing composite object                     | [Writing keys and values to a stream](#writing-keys-and-values-to-a-stream) 
-| `nextWrite`     | `fun O.nextWrite([qualifiers])`          | Continues writing composite object (between fields) | [Writing keys and values to a stream](#writing-keys-and-values-to-a-stream) 
-| `endWrite`      | `fun O.endWrite([qualifiers])`           | Ends writing composite object                       | [Writing keys and values to a stream](#writing-keys-and-values-to-a-stream) 
-| `beginRead`     | `fun I.beginRead([qualifiers])`          | Begins reading composite object                     | [Reading keys and values from a stream](#reading-keys-and-values-from-a-stream) 
-| `nextRead`      | `fun I.nextRead([qualifiers]): R`        | Continues reading composite object (between fields) | [Reading keys and values from a stream](#reading-keys-and-values-from-a-stream) 
-| `endRead`       | `fun I.endRead([qualifiers])`            | Ends reading composite object                       | [Reading keys and values from a stream](#reading-keys-and-values-from-a-stream) 
+| Signature                                    | Description                                         | Example
+| -------------------------------------------  | --------------------------------------------------- | -------
+| `I.readXXX([qualifiers]): T`                 | Reads typed value from the input `I`                | [Showcase](#showcase)
+| `O.writeXXX([qualifiers], value: T)`         | Writes typed value to the output `O`                | [Simple binary deserialization](#simple-binary-deserialization)
+| `IO.child(qualifiers): IO`                   | Narrows input/output type `IO` with qualifiers      | [Child operator](#child-operator)
+| `IO.child(qualifiers, block: IO.() -> T): T` | -- same --                                          | [XML and friends](#xml-and-friends)  
+| `I.canRead([qualifiers]): Boolean`           | Checks if input `I` has a value to read             | [Optional properties](#optional-properties) 
+| `O.beginWrite([qualifiers])`                 | Begins writing composite object                     | [Writing keys and values to a stream](#writing-keys-and-values-to-a-stream) 
+| `O.nextWrite([qualifiers])`                  | Continues writing composite object (between fields) | [Writing keys and values to a stream](#writing-keys-and-values-to-a-stream) 
+| `O.endWrite([qualifiers])`                   | Ends writing composite object                       | [Writing keys and values to a stream](#writing-keys-and-values-to-a-stream) 
+| `I.beginRead([qualifiers])`                  | Begins reading composite object                     | [Reading keys and values from a stream](#reading-keys-and-values-from-a-stream) 
+| `I.nextRead([qualifiers])`                   | Continues reading composite object (between fields) | [Reading keys and values from a stream](#reading-keys-and-values-from-a-stream) 
+| `I.nextRead([qualifiers]): R`                | Returns next property to read                       | [Arbitrary order of keys](#arbitrary-order-of-keys) 
+| `I.endRead([qualifiers])`                    | Ends reading composite object                       | [Reading keys and values from a stream](#reading-keys-and-values-from-a-stream) 
                                        
 * `T` in `readXXX` and `writeXXX` operator function can be an arbitrary type and those functions can be generic
   with complex dependencies between their generic parameter types and `T`.                                       
-* `R` in `nextRead()` operator function can be either `Unit`, `String?`, or `Int`.                                                     
+* `R` in `nextRead()` operator function can be either `String?` or `Int`.                                                     
                                                           
 ### Qualifiers 
 
