@@ -1,11 +1,11 @@
 # Serialization by Convention
 
+**THIS IS A DRAFT DOCUMENT**: Beware of typos and other work in progress.
+
 This document details the alternative approach to Kotlin Serialization that does not rely of pre-defined interfaces
 like `KInput` and `KOutput`, but adapts to arbitrary input/output APIs via extensions and by convention.
 
-As you will see, some things become simpler and get more performance, while others are getting more complicated. 
-
-> Note: All function and annotation names in this document are tentative. 
+> Note: All function and annotation names in this document are tentative.
 It is designed to outline the general idea, and it is not a final design. 
 
 ## Table of contents
@@ -20,7 +20,7 @@ It is designed to outline the general idea, and it is not a final design.
   * [Nullable types](#nullable-types)    
   * [Automatically derived implementations](#automatically-derived-implementations)  
   * [Serializing collections and arrays](#serializing-collections-and-arrays) 
-* [Serializing to maps](#serializing-to-maps)
+* [Objects as maps](#objects-as-maps)
   * [Map primer](#map-primer)
   * [Reading objects from DB](#reading-objects-from-db)
   * [Alternative storage types](#alternative-storage-types)
@@ -29,11 +29,14 @@ It is designed to outline the general idea, and it is not a final design.
   * [Child operator](#child-operator)
   * [Enums](#enums)
   * [Optional properties](#optional-properties)
-* [Streaming JSON](#streaming-json)
-  * [Writing keys and values to a stream](#writing-keys-and-values-to-a-stream)
-  * [Reading keys and values from a stream](#reading-keys-and-values-from-a-stream)
+* [Streaming](#streaming)
+  * [Writing JSON](#writing-JSON)
+  * [Reading JSON](#reading-json)
+  * [Custom serial names](#custom-serial-names)
   * [Arbitrary order of keys](#arbitrary-order-of-keys)
-  * [XML and friends](#xml-and-friends)     
+  * [Lists as JSON arrays](#lists-as-JSON-arrays)
+  * [XML and friends](#xml-and-friends)
+  * [Protobuf and friends](#protobuf-and-friends)     
 * [Exotic formats](#exotic-formats)  
   * [Fixed width text files](#fixed-width-text-files)
 * [Summary](#summary)
@@ -77,11 +80,12 @@ as an instance of serialization).
 
 ### Goals
 
-Design goals are:
+Design goals for Kotlin serialization are:
 
 * Cross-platform (JVM, JS, Native).
 * Reflection is optional (most use-cases shall work without it), static types only by default.
-* Serialization format agnostic.
+* Serialization-format agnostic.
+* Works with non-augmented classes, classes that can be used for any other purposes in application.
 * Simple things should be simple, complex and exotic things shall be supported.
 * High-performance, but see above &mdash; it is Ok is performance sensitive code need to be more complicated, 
   but it is not Ok if clarity of all the code suffers.
@@ -556,7 +560,7 @@ Let us try to serialize the following graph:
 class Person(val name: String, val age: Int)
 
 @Serializable(DataIO::class)
-class Persons(val list: List<Persons>)
+class Persons(val list: List<Person>)
 ```
 
 In order to generate `DataIO<Persons>` implementation compiler needs `DataOuput.writeXXX` function that 
@@ -657,10 +661,11 @@ that can be stored in those collections.
 
 > The question of when and how these automatic list serializers shall be generated is an open issue here, too.
 
-## Serializing to maps
+## Objects as maps
 
-In this chapter we'll see how objects can be converted to maps and other map-list data structures. 
-Converting objects to/from text formats like JSON and XML is also very close.
+In this chapter we'll see how objects can be converted to/from maps and other map-list data structures, 
+which includes various DOM-like hierarchical structures, database rows, configuration property files,
+tables in UI, etc. Converting objects to/from text formats like JSON and XML can be performed in this way, too.
 
 ### Map primer
 
@@ -700,14 +705,15 @@ fun <T> Map<String,Any?>.read(name: String): T {
 }
 ```
 
-We have something new here. We've already seen generic `write` and `read` functions, but here these functions have an 
-additional `name: String` which is where compiled code is going to put the name of the property that is being serialized.
+We have something new here. We've already seen generic `write` and `read` functions, but here these functions are
+_qualified_ &mdash; they have an additional `name: String` which is where compiled code is going to put the 
+name of the property that is being serialized.
 
-> Why don't we use `KProperty<*>` instead of `String` here? There are several reasons. 
-For dense and performance-optimized serialization formats an extra indirection will be noticeable on benchmarks; 
-it is a common request to be able to tweak _serial name_ of  the property and make it different form the property name itself; 
-serialization is not necessarily about properties, but more about serializing the state of backing fields; 
-this "serial name injection" is a part of a more generic mechanism. 
+> We could use `KProperty<*>` instead of `String` here, but we don't need anything beyond property's 
+_serial name_ here, which can be different from its actual property name.  
+For dense and performance-optimized serialization formats an extra indirection will be noticeable on benchmarks,
+so we show-case higher-performance approach even if it does not matter in this example. 
+Moreover, this "serial name injection" is a part of a more generic mechanism of _qualifiers_. 
 
 > It might be better to use here some `inline class Name(val name: String)` wrapper on top of a `String` to be 
 more explicit about the nature of `name: String` parameter. 
@@ -1197,17 +1203,17 @@ cannot be directly represented in the source, but is feasible if code is generat
 directly use synthetic constructor of the class with optional parameters and pass a corresponding bitmask to 
 indicate whether an optional property was present or not.
 
-## Streaming JSON
+## Streaming
 
 Previous chapters had introduced enough concepts to write and read JSON and JSON-like formats to/from 
 DOM-like (maps of maps) data structures. It is a good solution for JSON-like configuration formats, 
 but it is too slow (and produces too much garbage) for serving and consuming data when working with REST services
 in performance-sensitive applications.
 
-In this chapter we'll see how to compose and parse JSON in a streaming way without building intermediate DOM-like 
+In this chapter we'll see how to compose and parse JSON, XML, Protobuf and other keyed or tagged formats in a streaming way without building intermediate DOM-like 
 representation.
 
-### Writing keys and values to a stream
+### Writing JSON
 
 We start with a data mode from [Serializing object graphs](#serializing-object-graphs) section:
 
@@ -1299,7 +1305,7 @@ object __PersonObjectNotationWriter : ObjectNotationWriter<Person> {
 
 > You can find worked out example of code from this section in [src/WritingKV.kt](src/WritingKV.kt)
 
-### Reading keys and values from a stream
+### Reading JSON
 
 We will skim over symmetric approach to parse JSON-like format in a streaming way under assumption that keys
 are stored in the program order (just like we've printed them in the previous section). This is not how JSON
@@ -1331,6 +1337,69 @@ object __PersonObjectNotationReader : ObjectNotationReader<Person> {
 and fill in default values. They need to read ahead the next tag and implement a _qualified_ `canRead(name: String)`
 operator that the compiler will invoke before `child(name).readXXX()` line, unlike unqualified `canRead()` operator
 that was shown in [Optional properties](#optional-properties) section.
+
+### Custom serial names
+
+Serial names that are used as `String` _qualifiers_ to serialization operator functions use the name of corresponding
+property by default. However, they can be explicitly specified via `@SerialName` annotation. Adding these 
+annotations to the `Person` class from [Writing JSON](#writing-JSON) section:
+
+```kotlin
+class Person(
+    val name: String, 
+    val age: Int, 
+    @SerialName("birth_date") val born: Date, 
+    @SerialName("death_date") val dead: Date
+)
+```  
+
+would produce the following output:
+
+```text
+{name:Elvis,age:42,birth_date:{year:1935,month:1,day:8},death_date:{year:1977,month:8,day:16}}
+```
+
+In fact, when we define a _qualified_ `child` operator function like this:
+
+```kotlin
+fun PrintWriter.child(name: String)
+```
+
+It works as if we've explicitly added `@SerializationQualifier` annotation that was shown
+in [Alternative storage types](#alternative-storage-types) section in the following way:
+
+```kotlin
+@SerializationQualifier(SerialName::class)
+fun PrintWriter.child(name: String)
+```
+
+So we call `SerialName` an _implicit qualifier_. There is no harm in specifying it explicitly. 
+Moreover, we can define our custom explict qualifiers. For example, we can read instances of `Person` class
+from a database and use totally different column names in the database, while still using the same source class:
+
+```kotlin
+annotation class DbName(val name: String)
+
+@Serializable(ObjectNotationWriter::class, DbReader::class)
+class Person(
+    @DbName("NAMED") val name: String, 
+    @DbName("AGED") val age: Int, 
+    @DbName("BORN") @SerialName("birth_date") val born: Date, 
+    @DbName("DEAD") @SerialName("death_date") val dead: Date
+)
+```
+
+Functions to read this object from `ResultSet` as was shown in [Reading objects from DB](#reading-objects-from-db)
+section can be qualified like this:
+
+```kotlin
+@SerializationQualifier(DbName::class)
+fun ResultSet.readString(name: String): String = getString(name)
+``` 
+
+An explicit `SerializationQualifier` annotation here would result in substitution of `name` property from `DbName`
+annotation, falling back to implicitly qualified read function or to unqualified read function when `DbName`
+annotation is not present.
 
 ### Arbitrary order of keys
 
@@ -1391,6 +1460,53 @@ recent value of a duplicated property is used. But what if there is a requiremen
 
 > You can find worked out example of code from this section in [src/ArbitraryOrder.kt](src/ArbitraryOrder.kt)
 
+### Lists as JSON arrays
+
+JSON format provides an opportunity to showcase custom serialization of lists that is fully static and 
+does not use any kind of reflection. JSON has a special syntax for arrays and we'd like to use it for a 
+data model from [Serializing collections and arrays](#serializing-collections-and-arrays) section. 
+
+```kotlin
+class Person(val name: String, val age: Int)
+class Persons(val list: List<Person>)
+```
+
+We define a specialized writing function for lists:
+
+```kotlin
+@InjectSerializer
+fun <T> PrintWriter.writeList(obj: List<T>, writer: ObjectNotationWriter<T>) {
+    print("[")
+    var sep = ""
+    for (item in obj) {
+        print(sep)
+        write(item, writer)
+        sep = ","
+    }
+    print("]")
+}
+```
+
+And it is going to be resolved as the most specific one when generating writer for `Persons`:
+
+```kotlin
+object __PersonsObjectNotationWriter : ObjectNotationWriter<Persons> {
+    override fun PrintWriter.write(obj: Persons) {
+        beginWrite()
+        child("list").writeList(obj.list, __PersonObjectNotationWriter)
+        endWrite()
+    }
+}
+```
+
+So we get this JSON-line output with a list:
+
+```text
+{list:[{name:Elvis,age:42},{name:Jesus,age:33}]}
+```
+
+> You can find worked out example of code from this section in [src/WritingListAsArray.kt](src/WritingListAsArray.kt)
+
 ### XML and friends
 
 Write XML, unlike JSON, requires us to tags around property value, so we will use alternative signature of
@@ -1430,7 +1546,7 @@ object __PersonXmlWriter : XmlWriter<Person> {
         endWrite("Person")
     }
 }
-```
+```                                                              
 
 All in all, we are able to produce this maximally verbose XML output:
 
@@ -1456,6 +1572,131 @@ All in all, we are able to produce this maximally verbose XML output:
 ```
 
 > You can find worked out example of code from this section in [src/WritingXml.kt](src/WritingXml.kt)
+
+### Protobuf and friends
+
+Protobuf and similar formats use integer tags as opposed to string keys. That is the major difference from 
+the standpoint of serializing them. The fact that Protobuf is a binary format is of a secondary importance, 
+but it is important to keep in mind that Protobuf is a performance-sensitive format so generated serialization 
+code must be efficient and should not have extra indirection.
+
+In order to specify tags for our classes we define an explicit qualifier annotation:
+
+```kotlin
+annotation class Tag(val tag: Int)
+
+@Serializable(ProtoWriter::class)
+class Date(
+    @Tag(1) val year: Int,
+    @Tag(2) val month: Int,
+    @Tag(3) val day: Int
+)
+
+@Serializable(ProtoWriter::class)
+class Person(
+    @Tag(1) val name: String,
+    @Tag(2) val age: Int,
+    @Tag(3) val born: Date,
+    @Tag(4) val dead: Date)
+```
+
+Now, Protobuf is a very opinionated format in what and how it can represent. Missing fields in Protobuf
+are assumed to be `null` and there is no other way to encode nulls or defaults. Representation of collections
+and arrays in Protobuf is fancy and cannot be generalized to `List<List<Int>>`. So there is little
+sense to attempt a composable solution as was shown in [Nullable types](#nullable-types) and
+[Serializing collections and arrays](#serializing-collections-and-arrays) sections.
+There is no point is doing implementation via `child` operator.
+Instead, all writing functions to support Protobuf are qualified and specialized for each supported type:
+
+```kotlin
+@SerializationQualifier(Tag::class)
+fun ProtoOutput.writeVarint(tag: Int, value: Int) {
+    emitVarint(tag shl 3)
+    emitVarint(value)
+}
+
+@SerializationQualifier(Tag::class)
+fun ProtoOutput.writeString(tag: Int, value: String) {
+    emitVarint(tag shl 3 or 2)
+    emitBytes(value.toByteArray(Charsets.UTF_8))
+}
+```
+
+> Note, how we've called primitive function on `ProtoOutput` type `emitVarint`. If we'd called it
+`writeVarint` then it would not cause an immediate problem, since a qualified verision is considered
+to be more specif, but then we would not get any error on `@Serializable(ProtoWriter::class)` annotated
+class with a missing `@Tag` annotation on its properties. Having some kind of operator modifier or
+annotation on recognized operator functions would have helped here.
+
+Protobuf is not a well-designed format in terms of composing and parsing performance.
+Here we face a challenge of writing Protobuf embedded messages. They have to be
+length-encoded, so writing them, in general, requires two passes over the data structure:
+first pass to compute size, second pass to actually write them. Google's Protobuf implementation
+stores a computed size directly in the classes that represent messages. We don't
+have this luxury, since our goal is to work with non-augmented application classes.
+
+We choose a different strategy. We immediately reserve one byte for size (small message optimization),
+write embedded message into buffer, then patch the buffer to include size
+(shifting written bytes if the size turned out to be more than 127 bytes):
+
+```kotlin
+@SerializationQualifier(Tag::class)
+@InjectSerializer
+fun <T> ProtoOutput.write(tag: Int, obj: T, writer: ProtoWriter<T>) {
+    emitVarint(tag shl 3 or 2)
+    val pos = this.size
+    emit(0) // reserve a byte
+    write(obj, writer)
+    patchVarint(pos, this.size - pos - 1)
+}
+```
+
+> Unfortunately, this strategy can get us O(N^2) on very large messages,
+so some other approach is needed to efficiently write Protobuf messages.
+Design of such an approach is out of the scope of this example.
+
+Compiler generates the following simple serializers for us:
+
+```kotlin
+object __DateProtoWriter : ProtoWriter<Date> {
+    override fun ProtoOutput.write(obj: Date) {
+        writeVarint(1, obj.year)
+        writeVarint(2, obj.month)
+        writeVarint(3, obj.day)
+    }
+}
+
+object __PersonProtoWriter : ProtoWriter<Person> {
+    override fun ProtoOutput.write(obj: Person) {
+        writeString(1, obj.name)
+        writeVarint(2, obj.age)
+        write(3, obj.born, __DateProtoWriter)
+        write(4, obj.dead, __DateProtoWriter)
+    }
+}
+```
+
+This gets us Protobuf bytes that can be decoded in other
+languages using the following proto file:
+
+```proto
+syntax = "proto3";
+
+message Date {
+    int32 year = 1;
+    int32 month = 2;
+    int32 date = 3;
+}
+
+message Person {
+    string name = 1;
+    int32 age = 2;
+    Date born = 3;
+    Date dead = 4;
+}
+```
+
+> You can find worked out example of code from this section in [src/Proto.kt](src/Proto.kt)
 
 ## Exotic formats
 
@@ -1545,21 +1786,17 @@ This chapter summarizes all introduced concepts.
 
 ### Serializer interfaces
 
-Reader extension interface `R` for input type `I`:
+Serializer extension interface with an arbitrary name `S` must have a single unbounded generic type parameter
+(here named `T`) and may define the following functions (all are optional, at least one must be present):
 
 ```kotlin
-interface R<T> {
-    fun I.read(): T // required extension function
-}
-```
-
-Writer extension interface `W` for output type `O`:
-
-```kotlin
-interface W<T> {
-    fun O.write(obj: T) // required extension function
+interface S<T> {
+    fun I.read(): T 
+    fun O.write(obj: T)
 }
 ``` 
+
+Here `I` is an input type, and `O` is an output type.
 
 ### Operator functions
 
@@ -1570,13 +1807,13 @@ interface W<T> {
 | `IO.child(qualifiers): IO`                   | Narrows input/output type `IO` with qualifiers      <br> [Child operator](#child-operator)
 | `IO.child(qualifiers, block: IO.() -> T): T` | -- same --                                          <br> [XML and friends](#xml-and-friends)  
 | `I.canRead([qualifiers]): Boolean`           | Checks if input `I` has a value to read             <br> [Optional properties](#optional-properties) 
-| `O.beginWrite([qualifiers])`                 | Begins writing composite object                     <br> [Writing keys and values to a stream](#writing-keys-and-values-to-a-stream) 
-| `O.nextWrite([qualifiers])`                  | Continues writing composite object (between fields) <br> [Writing keys and values to a stream](#writing-keys-and-values-to-a-stream) 
-| `O.endWrite([qualifiers])`                   | Ends writing composite object                       <br> [Writing keys and values to a stream](#writing-keys-and-values-to-a-stream) 
-| `I.beginRead([qualifiers])`                  | Begins reading composite object                     <br> [Reading keys and values from a stream](#reading-keys-and-values-from-a-stream) 
-| `I.nextRead([qualifiers])`                   | Continues reading composite object (between fields) <br> [Reading keys and values from a stream](#reading-keys-and-values-from-a-stream) 
+| `O.beginWrite([qualifiers])`                 | Begins writing composite object                     <br> [Writing JSON](#writing-JSON) 
+| `O.nextWrite([qualifiers])`                  | Continues writing composite object (between fields) <br> [Writing JSON](#writing-JSON) 
+| `O.endWrite([qualifiers])`                   | Ends writing composite object                       <br> [Writing JSON](#writing-JSON) 
+| `I.beginRead([qualifiers])`                  | Begins reading composite object                     <br> [Reading JSON](#reading-json) 
+| `I.nextRead([qualifiers])`                   | Continues reading composite object (between fields) <br> [Reading JSON](#reading-json) 
 | `I.nextRead([qualifiers]): R`                | Returns next property to read                       <br> [Arbitrary order of keys](#arbitrary-order-of-keys) 
-| `I.endRead([qualifiers])`                    | Ends reading composite object                       <br> [Reading keys and values from a stream](#reading-keys-and-values-from-a-stream) 
+| `I.endRead([qualifiers])`                    | Ends reading composite object                       <br> [Reading JSON](#reading-json) 
                                        
 * `T` in `readXXX` and `writeXXX` operator function can be an arbitrary type and those functions can be generic
   with complex dependencies between their generic parameter types and `T`.                                       

@@ -50,7 +50,7 @@ private fun testWrite(): ByteArray {
     val output = DataOutputStream(baos)
     output.write(person, __PersonDataOutputWriter)
     val bytes = baos.toByteArray()
-    println(bytes.joinToString(separator = "") { it.toString(16).padStart(2, '0') })
+    println(bytes.joinToString(separator = "") { (it.toInt() and 0xff).toString(16).padStart(2, '0') })
     return bytes
 }
 
