@@ -66,7 +66,6 @@ private fun testRead(bytes: ByteArray) {
     println(person)
 }
 
-
 // --- i/o interfaces ---
 
 interface DataOutputWriter<in T> {

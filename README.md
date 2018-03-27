@@ -27,9 +27,18 @@ It is designed to outline the general idea, and it is not a final design.
   * [Nullable configuration properties](#nullable-configuration-properties)
   * [Child operator](#child-operator)
   * [Enums](#enums)
-  * [Optional properties](#optional-properties)   
+  * [Optional properties](#optional-properties)
+* [Streaming JSON](#streaming-json)
+  * [Writing keys and values to a stream](#writing-keys-and-values-to-a-stream)
+  * [Reading keys and values from a stream](#reading-keys-and-values-from-a-stream)
+  * [Arbitrary order of keys](#arbitrary-order-of-keys)     
 * [Exotic formats](#exotic-formats)  
   * [Fixed width text files](#fixed-width-text-files)
+* [Summary](#summary)
+  * [Serializer interfaces](#serializer-interfaces)
+  * [Operator functions](#operator-functions) 
+  * [Qualifiers](#qualifiers)
+  * [Open issues](#open-issues) 
                      
 ## Introduction
 
@@ -1168,6 +1177,199 @@ cannot be directly represented in the source, but is feasible if code is generat
 directly use synthetic constructor of the class with optional parameters and pass a corresponding bitmask to 
 indicate whether an optional property was present or not.
 
+## Streaming JSON
+
+Previous chapters had introduced enough concepts to write and read JSON and JSON-like formats to/from 
+DOM-like (maps of maps) data structures. It is a good solution for JSON-like configuration formats, 
+but it is too slow (and produces too much garbage) for serving and consuming data when working with REST services
+in performance-sensitive applications.
+
+In this chapter we'll see how to compose and parse JSON in a streaming way without building intermediate DOM-like 
+representation.
+
+### Writing keys and values to a stream
+
+We start with a data mode from [Serializing object graphs](#serializing-object-graphs) section:
+
+```kotlin
+class Date(val year: Int, val month: Int, val day: Int)
+class Person(val name: String, val age: Int, val born: Date, val dead: Date)
+```  
+
+Our goal is to produce the following JSON-like `{key:value}` text output:
+
+```text
+{name:Elvis,age:42,born:{year:1935,month:1,day:8},dead:{year:1977,month:8,day:16}}
+```
+
+> We totally ignore in this example all the concerns related to quoting keys and values to simplify the code. 
+
+We start with a usual scaffolding, defining extension on `PrintWriter`:
+
+```text
+interface ObjectNotationWriter<T> {
+    fun PrintWriter.write(obj: T)
+}
+
+@InjectSerializer
+fun <T> PrintWriter.write(obj: T, writer: ObjectNotationWriter<T>) = with(writer) { write(obj) }
+```
+
+> The actual high-performance JSON writer should not use `PrintWriter` which is synchronized.
+
+We use `child` operator to write keys. The `child` operator must return an reference to output
+type (see [Child operator](#child-operator) section where it was introduced), but it can also have 
+side-effects, which we use here:
+
+```kotlin
+fun PrintWriter.child(name: String) = this.also { print("$name:") }
+```
+
+In this example we define a function to write value for `Any?` type to save code:
+
+```kotlin
+fun PrintWriter.writeValue(value: Any?) = print(value)
+```
+
+>  The actual high-performance JSON writer should provide specialized writing function for various
+primitive types to avoid boxing. 
+
+However, this is not enough. We need to write `{` at the start of every composite object value, 
+write `,` in between its fields, and write `}` at the end of it. It is achieved by the following three operators:
+
+```kotlin
+fun PrintWriter.beginWrite() = print("{")
+fun PrintWriter.nextWrite() = print(",")
+fun PrintWriter.endWrite() = print("}")
+```
+
+> As usual, we assume that operators are matched by name. The actual design would use `operator` modifier
+or some other approach to mark them.
+
+Because of the presence of those operators on `PrintWriter` output type, for classes annotated with
+`@Serializable(ObjectNotationWriter::class)` compiler is going to generate:
+
+```kotlin
+object __DateObjectNotationWriter : ObjectNotationWriter<Date> {
+    override fun PrintWriter.write(obj: Date) {
+        beginWrite()
+        child("year").writeValue(obj.year)
+        nextWrite()
+        child("month").writeValue(obj.month)
+        nextWrite()
+        child("day").writeValue(obj.day)
+        endWrite()
+    }
+}
+
+object __PersonObjectNotationWriter : ObjectNotationWriter<Person> {
+    override fun PrintWriter.write(obj: Person) {
+        beginWrite()
+        child("name").writeValue(obj.name)
+        nextWrite()
+        child("age").writeValue(obj.age)
+        nextWrite()
+        child("born").write(obj.born, __DateObjectNotationWriter)
+        nextWrite()
+        child("dead").write(obj.dead, __DateObjectNotationWriter)
+        endWrite()
+    }
+}
+```
+
+> You can find worked out example of code from this section in [src/WritingKV.kt](src/WritingKV.kt)
+
+### Reading keys and values from a stream
+
+We will skim over symmetric approach to parse JSON-like format in a streaming way under assumption that keys
+are stored in the program order (just like we've printed them in the previous section). This is not how JSON
+works. In actual JSON keys can go in arbitrary order, but there are some real-life tagged-value formats defined like that
+for parsing performance reasons. 
+
+The generated readers are going to be symmetric to the corresponding writers. Here is a `Person` reader for example:
+
+```kotlin
+object __PersonObjectNotationReader : ObjectNotationReader<Person> {
+    override fun Parser.read(): Person {
+        beginRead()
+        val name = child("name").readString()
+        nextRead()
+        val age = child("age").readInt()
+        nextRead()
+        val born = child("born").read(__DateObjectNotationReader)
+        nextRead()
+        val dead = child("dead").read(__DateObjectNotationReader)
+        endRead()
+        return Person(name, age, born, dead)
+    }
+}
+```
+
+> You can find worked out example of code from this section in [src/ReadingKV.kt](src/ReadingKV.kt)
+
+> Note, that real-life formats with this kind of structure use keys (tags) to be able to skip missing properties
+and fill in default values. They need to read ahead the next tag and implement a _qualified_ `canRead(name: String)`
+operator that the compiler will invoke before `child(name).readXXX()` line, unlike unqualified `canRead()` operator
+that was shown in [Optional properties](#optional-properties) section.
+
+### Arbitrary order of keys
+
+In actual JSON keys can go in arbitrary order. To support that, we change definition of `nextRead` operator
+so that it returns `String?`. The result is the name of the next property to read or `null` when there are 
+no more properties in the current object. 
+
+```kotlin
+fun Parser.nextRead(): String? { /* ... */ }
+```
+
+This change results in a radically different content of generated `Person` reader:
+
+```kotlin
+object __PersonObjectNotationReader : ObjectNotationReader<Person> {
+    override fun Parser.read(): Person {
+        beginRead()
+        var name: String? = null
+        var age: Int = 0
+        var born: Date? = null
+        var dead: Date? = null
+        var bitMask = 0
+        loop@while (true) {
+            when (nextRead()) {
+                "name" -> {
+                    name = readString()
+                    bitMask = bitMask or 0x01
+                }
+                "age" -> {
+                    age = readInt()
+                    bitMask = bitMask or 0x02
+                }
+                "born" -> {
+                    born = read(__DateObjectNotationReader)
+                    bitMask = bitMask or 0x04
+                }
+                "dead" -> {
+                    dead = read(__DateObjectNotationReader)
+                    bitMask = bitMask or 0x08
+                }
+                null -> break@loop
+            }
+        }
+        endRead()
+        require(bitMask == 0x0F)
+        return Person(name!!, age, born!!, dead!!)
+    }
+}
+```
+
+Now the whole generated `read` function is a loop that collects parsed values in local variables and updates
+`bitMask` to track which properties were read. This `bitMask` will be used to fill in values for optional 
+properties (see [Optional properties](#optional-properties)) if there were any. Since there are no optional 
+properties in this example, it just requires that all properties are present.
+
+> There is an open question on how to handle duplicated properties like `{age:42,age:33}`. In this example the most 
+recent value of a duplicated property is used. But what if there is a requirement to report an error in this case?     
+
+> You can find worked out example of code from this section in [src/ArbitraryOrder.kt](src/ArbitraryOrder.kt)
 
 ## Exotic formats
 
@@ -1251,8 +1453,57 @@ Converting a string text to a list of objects becomes as simple as
 
 > You can find worked out example of code from this section in [src/FixedWidth.kt](src/FixedWidth.kt)
 
+## Summary
 
+This chapter summarizes all introduced concepts.
 
+### Serializer interfaces
+
+Reader extension interface `R` for input type `I`:
+
+```kotlin
+interface R<T> {
+    fun I.read(): T // required extension function
+}
+```
+
+Writer extension interface `W` for output type `O`:
+
+```kotlin
+interface W<T> {
+    fun O.write(obj: T) // required extension function
+}
+``` 
+
+### Operator functions
+
+| Name            | Signature                                | Description                                         | Example
+| --------------- | ---------------------------------------  | --------------------------------------------------- | -------
+| `read`          | `fun I.readXXX([qualifiers]): T`         | Reads typed value from the input `I`                | [Showcase](#showcase)
+| `write`         | `fun O.writeXXX([qualifiers], value: T)` | Writes typed value to the output `O`                | [Simple binary deserialization](#simple-binary-deserialization)
+| `child`         | `fun IO.child(qualifiers): IO`           | Narrows input/output type `IO` with qualifiers      | [Child operator](#child-operator)
+| `canRead`       | `fun I.canRead([qualifiers]): Boolean`   | Checks if input `I` has a value to read             | [Optional properties](#optional-properties) 
+| `beginWrite`    | `fun O.beginWrite([qualifiers])`         | Begins writing composite object                     | [Writing keys and values to a stream](#writing-keys-and-values-to-a-stream) 
+| `nextWrite`     | `fun O.nextWrite([qualifiers])`          | Continues writing composite object (between fields) | [Writing keys and values to a stream](#writing-keys-and-values-to-a-stream) 
+| `endWrite`      | `fun O.endWrite([qualifiers])`           | Ends writing composite object                       | [Writing keys and values to a stream](#writing-keys-and-values-to-a-stream) 
+| `beginRead`     | `fun I.beginRead([qualifiers])`          | Begins reading composite object                     | [Reading keys and values from a stream](#reading-keys-and-values-from-a-stream) 
+| `nextRead`      | `fun I.nextRead([qualifiers]): R`        | Continues reading composite object (between fields) | [Reading keys and values from a stream](#reading-keys-and-values-from-a-stream) 
+| `endRead`       | `fun I.endRead([qualifiers])`            | Ends reading composite object                       | [Reading keys and values from a stream](#reading-keys-and-values-from-a-stream) 
+                                       
+* `T` in `readXXX` and `writeXXX` operator function can be an arbitrary type and those functions can be generic
+  with complex dependencies between their generic parameter types and `T`.                                       
+* `R` in `nextRead()` operator function can be either `Unit`, `String?`, or `Int`.                                                     
+                                                          
+### Qualifiers 
+
+TBD
+ 
+### Open issues
+
+1. Should operators be marked with `operator` modifier, some other modifier or some annotation or different annotations?
+   (see [Showcase](#showcase)).
+   
+TBD       
 
  
 
