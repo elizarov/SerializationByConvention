@@ -1,6 +1,6 @@
 # Serialization by Convention
 
-This document details the git remote add origin https://github.com/elizarov/SerializationByConvention.git
+This document details the alternative approach to Kotlin Serialization that does not rely of pre-defined interfaces
 like `KInput` and `KOutput`, but adapts to arbitrary input/output APIs via extensions and by convention.
 
 As you will see, some things become simpler and get more performance, while others are getting more complicated. 
