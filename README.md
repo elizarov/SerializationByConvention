@@ -37,7 +37,7 @@ It is designed to outline the general idea, and it is not a final design.
   * [Lists as JSON arrays](#lists-as-JSON-arrays)
   * [XML and friends](#xml-and-friends)
   * [Protobuf and friends](#protobuf-and-friends)
-  * [Skipping missing properties](#skipping-missing-properties)
+  * [Reading Protobuf](#reading-protobuf)
 * [Exotic formats](#exotic-formats)  
   * [Fixed width text files](#fixed-width-text-files)
 * [Summary](#summary)
@@ -57,12 +57,12 @@ Serializing objects in/out of some storage requires either use of reflection, ma
 writing boiler plate code or using code-generation. We want serialization that is safe, fast and portable beyond JVM, 
 so reflection is out of the question. We don't want to manually write boiler plate. It is error-prone. 
 
-So we are choosing code-generation. It has to compile-time code-generation for maximal portability.
-The goal is that for simple serialization tasks writing `class Person(val name: String, age: Int)` and
-adding some sort of annotation should be enough get a code that reads and writes instances of this class 
-generated.
+So we are choosing code-generation. It has to be compile-time code-generation for maximal portability.
+The goal is that for simple serialization tasks adding some sort of annotation to a simple class like
+`class Person(val name: String, age: Int)`  should be enough get generated code that reads and writes
+instances of this class.
 
-The challenge is that there are lot of serialization formats out there. It is not sufficient for us
+The challenge is that there are lots of serialization formats out there. It is not sufficient for us
 to support some kind of "Kotlin Serialization" format. We'd like support popular formats like JSON and Protobuf, 
 as well as exotic ones like fixed-width text files or FIX. 
 Serialization formats can come in various shapes and forms:
@@ -72,7 +72,7 @@ Serialization formats can come in various shapes and forms:
 * Format can locate properties based their name, integer tags, some other way,
   or simply based on the order of properties in a class. 
 * Format can be driven by the class components as they were known at compile time or can be 
-  driven by external metadata. 
+  driven by external metadata descriptors.
   
 A single class can be read (deserialized) into an object from a database row, transferred to frontend 
 application in JSON (serialized on a backend and deserialized in a frontend), 
@@ -90,9 +90,29 @@ Design goals for Kotlin serialization are:
 * Simple things should be simple, complex and exotic things shall be supported.
 * High-performance, but see above &mdash; it is Ok is performance sensitive code need to be more complicated, 
   but it is not Ok if clarity of all the code suffers.
-* Clear way to plug your own serialization format.  
-* Most common formats should be supported out-of-the box (JSON and Protobuf for sure).  
-  
+* Clear way to plug your own serialization format, but the end-user experience
+  (using a serialization format written by somebody else) takes priority.
+* Most common formats should be supported out-of-the box (JSON and Protobuf for sure).
+
+The most important goal is to eliminate _boilerplate_ and repetition that plague modern applications.
+It is not uncommon in typical full-stack application have the same domain object read from DB
+(in one format like SQL table), stored in a server-side cache service like memcached
+(in another format like Protobuf), transmitted to the frontend (typically in JSON),
+persisted in a frontend cache (in yet another format) or otherwise saved to survive
+frontend application restarts (in something like Android Parcel),
+and ultimately copied to view models for display. You can find the same
+essential entity represented by different hand-written or automatically-generated
+classes at each of those layers of application with tons of hand-written code
+that copies data between those representations field-by-field. That
+is the boilerplate we aim to eliminate. People use JSON-storing NoSQL
+databases and JavaScript throughout their application stack,
+trading efficiency and typesafety for ease of maintenance. We aim
+to provide matching in its ease typesafe and efficient Kotlin solution.
+
+Our criteria for success is that it shall be possible in an application like that to
+simply add a property to an entity in one place and have it automatically
+supported throughout all the layers of application.
+
 Non-goals:
 
 * Out-of-the box support for variety of standard formats.  
@@ -1211,8 +1231,8 @@ DOM-like (maps of maps) data structures. It is a good solution for JSON-like con
 but it is too slow (and produces too much garbage) for serving and consuming data when working with REST services
 in performance-sensitive applications.
 
-In this chapter we'll see how to compose and parse JSON, XML, Protobuf and other keyed or tagged formats in a streaming way without building intermediate DOM-like 
-representation.
+In this chapter we'll see how to compose and parse JSON, XML, Protobuf and other keyed or tagged formats
+in a streaming way without building intermediate DOM-like representation.
 
 ### Writing JSON
 
@@ -1375,7 +1395,7 @@ fun PrintWriter.child(name: String)
 ```
 
 So we call `SerialName` an _implicit qualifier_. There is no harm in specifying it explicitly. 
-Moreover, we can define our custom explict qualifiers. For example, we can read instances of `Person` class
+Moreover, we can define our custom explicit qualifiers. For example, we can read instances of `Person` class
 from a database and use totally different column names in the database, while still using the same source class:
 
 ```kotlin
@@ -1398,21 +1418,30 @@ section can be qualified like this:
 fun ResultSet.readString(name: String): String = getString(name)
 ``` 
 
-An explicit `SerializationQualifier` annotation here would result in substitution of `name` property from `DbName`
+An explicit `SerializationQualifier` annotation here results in substitution of `name` property from `DbName`
 annotation, falling back to implicitly qualified read function or to unqualified read function when `DbName`
 annotation is not present.
 
+Databases have native support for dates, so we can provide a specialized reading function for `Date`:
+
+```kotlin
+@SerializationQualifier(DbName::class)
+fun ResultSet.readDate(name: String): Date = ...
+```
+
+It gets precedence over a generic `read` function.
+
 ### Arbitrary order of keys
 
-In actual JSON keys can go in arbitrary order. To support that, we change definition of `nextRead` operator
-so that it returns `String?`. The result is the name of the next property to read or `null` when there are 
+In the actual JSON format keys can go in arbitrary order. To support that, we change definition of `nextRead` operator
+so that it returns `String?`. The result of `nextRead` is the name of the next property to read or `null` when there are
 no more properties in the current object. 
 
 ```kotlin
 fun Parser.nextRead(): String? { /* ... */ }
 ```
 
-This change results in a radically different content of generated `Person` reader:
+This change results in a radically different contents of generated `Person` reader:
 
 ```kotlin
 object __PersonObjectNotationReader : ObjectNotationReader<Person> {
@@ -1424,7 +1453,8 @@ object __PersonObjectNotationReader : ObjectNotationReader<Person> {
         var dead: Date? = null
         var bitMask = 0
         loop@while (true) {
-            when (nextRead()) {
+            val nextName = nextRead()
+            when (nextName) {
                 "name" -> {
                     name = readString()
                     bitMask = bitMask or 0x01
@@ -1457,7 +1487,31 @@ properties (see [Optional properties](#optional-properties)) if there were any. 
 properties in this example, it just requires that all properties are present.
 
 > There is an open question on how to handle duplicated properties like `{age:42,age:33}`. In this example the most 
-recent value of a duplicated property is used. But what if there is a requirement to report an error in this case?     
+recent value of a duplicated property is used. But what if there is a requirement to report an error in this case?
+
+As you see, this code not handle unknown properties in any special way. It will continue to invoke `readNext`
+when faced with an unknown property. In order to explicity handle this case with add implementation of
+`skipRead` operator function. It is _qualified_ with the name of the property, so that we can report
+a meaningful error:
+
+```kotlin
+fun Parser.skipRead(name: String) {
+    error("Unexpected property '$name'")
+}
+```
+
+In the presence of this operator an `else` branch is added to the generated
+`when` code:
+
+```kotlin
+val nextName = nextRead()
+when (nextName) {
+    // ... 
+    else -> skipRead(nextName)
+}
+```
+
+> We could have implemented JSON format parser that skips unknown properties and continues parsing.
 
 > You can find worked out example of code from this section in [src/ArbitraryOrder.kt](src/ArbitraryOrder.kt)
 
@@ -1500,7 +1554,7 @@ object __PersonsObjectNotationWriter : ObjectNotationWriter<Persons> {
 }
 ```
 
-So we get this JSON-line output with a list:
+So we get this JSON-like output using JSON array syntax:
 
 ```text
 {list:[{name:Elvis,age:42},{name:Jesus,age:33}]}
@@ -1510,7 +1564,7 @@ So we get this JSON-line output with a list:
 
 ### XML and friends
 
-Write XML, unlike JSON, requires us to tags around property value, so we will use alternative signature of
+Writing XML, unlike JSON, requires us to place tags around property value, so we use alternative signature of
 operator function `child` that takes a block of code as the last parameter:
 
 ```kotlin
@@ -1601,9 +1655,9 @@ class Person(
     @Tag(4) val dead: Date)
 ```
 
-Now, Protobuf is a very opinionated format in what and how it can represent. Missing fields in Protobuf
+Now, Protobuf is a very opinionated format in what data structures it can represent. Missing fields in Protobuf
 are assumed to be `null` and there is no other way to encode nulls or defaults. Representation of collections
-and arrays in Protobuf is fancy and cannot be generalized to `List<List<Int>>`. So there is little
+and arrays in Protobuf is fancy and cannot be easily generalized to `List<List<Int>>`, for example. There is little
 sense to attempt a composable solution as was shown in [Nullable types](#nullable-types) and
 [Serializing collections and arrays](#serializing-collections-and-arrays) sections.
 There is no point is doing implementation via `child` operator.
@@ -1625,15 +1679,15 @@ fun ProtoOutput.writeString(tag: Int, value: String) {
 
 > Note, how we've called primitive function on `ProtoOutput` type `emitVarint`. If we'd called it
 `writeVarint` then it would not cause an immediate problem, since a qualified verision is considered
-to be more specif, but then we would not get any error on `@Serializable(ProtoWriter::class)` annotated
+to be more specific, but then we would not get any error on `@Serializable(ProtoWriter::class)` annotated
 class with a missing `@Tag` annotation on its properties. Having some kind of operator modifier or
-annotation on recognized operator functions would have helped here.
+annotation on operator functions would have helped here.
 
 Protobuf is not a well-designed format in terms of composing and parsing performance.
 Here we face a challenge of writing Protobuf embedded messages. They have to be
-length-encoded, so writing them, in general, requires two passes over the data structure:
+prefixed with their length, so writing them, in general, requires two passes over the data structure:
 first pass to compute size, second pass to actually write them. Google's Protobuf implementation
-stores a computed size directly in the classes that represent messages. We don't
+caches computed size directly in the classes that represent messages. We don't
 have this luxury, since our goal is to work with non-augmented application classes.
 
 We choose a different strategy. We immediately reserve one byte for size (small message optimization),
@@ -1697,9 +1751,9 @@ message Person {
 }
 ```
 
-> You can find worked out example of code from this section in [src/Proto.kt](src/Proto.kt)
+> You can find worked out example of code from this section in [src/ProtoWrite.kt](src/ProtoWrite.kt)
 
-### Skipping missing properties
+### Reading Protobuf
 
 Reading Protobuf is possible using `nextRead` operator with the following signature:
 
@@ -1710,6 +1764,29 @@ fun <T> ProtoInput.nextRead(): Int
 
 The value of `tag` property from `@Tag` qualifier annotation "spills out" into the result
 of `nextRead` function. The result is `-1` when the end is reached.
+
+However, the Protobuf format bundles together both tag and wire type.
+In a Protobuf-specific parsing code this tag+type integer is switched
+on, marking sure that both type and tag match, or else a separate function
+can use the type to skip unknown field.
+
+We can work around it in the following fashion. Protobuf `nextRead`
+implementation reads tag+type integer, stores type in its state, and
+returns tag. Then compiler-generate class-specific reader performs
+`when(nextTag) { ... }` and invokes the corresponding `readXXX` function.
+This function has to check that the wire type that was previously stored
+by `nextRead` is indeed the one it expected and report an error if not.
+The problem is that in Protobuf it is not an error.
+The value should have been skipped if the type does not match.
+We cannot easily mimic this behavior with this approach, because invoked
+`readXXX` has to return something. Moreover,
+saving auxiliary data like wire type to the field in the parser to check
+it later would degrade performance problem in tight parsing loops.
+For maximal performance parsing state has to be in local variables.
+
+> There is a solution to this conundrum if `nextRead` function looks at
+metadata descriptor of the class and react appropriately to missing
+fields, but it further reduces performance versus an optimized implementation.
 
 TBD
 
@@ -1827,8 +1904,9 @@ Here `I` is an input type, and `O` is an output type.
 | `O.endWrite([qualifiers])`                   | Ends writing composite object                       <br> [Writing JSON](#writing-JSON) 
 | `I.beginRead([qualifiers])`                  | Begins reading composite object                     <br> [Reading JSON](#reading-json) 
 | `I.nextRead([qualifiers])`                   | Continues reading composite object (between fields) <br> [Reading JSON](#reading-json) 
-| `I.nextRead([qualifiers]): R`                | Returns next property to read                       <br> [Arbitrary order of keys](#arbitrary-order-of-keys) 
-| `I.endRead([qualifiers])`                    | Ends reading composite object                       <br> [Reading JSON](#reading-json) 
+| `I.nextRead([qualifiers]): R`                | Returns next property to read                       <br> [Arbitrary order of keys](#arbitrary-order-of-keys)
+| `I.skipRead([qualifiers])`                   | Skips over unsupported property                     <br> [Arbitrary order of keys](#arbitrary-order-of-keys)
+| `I.endRead([qualifiers])`                    | Ends reading composite object                       <br> [Reading JSON](#reading-json)
                                        
 * `T` in `readXXX` and `writeXXX` operator function can be an arbitrary type and those functions can be generic
   with complex dependencies between their generic parameter types and `T`.                                       

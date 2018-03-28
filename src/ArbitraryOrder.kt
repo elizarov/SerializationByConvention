@@ -29,6 +29,10 @@ fun Parser.nextRead(): String? {
     return name
 }
 
+fun Parser.skipRead(name: String) {
+    error("Unexpected property '$name'")
+}
+
 object __DateObjectNotationReader : ObjectNotationReader<Date> {
     override fun Parser.read(): Date {
         beginRead()
@@ -37,7 +41,8 @@ object __DateObjectNotationReader : ObjectNotationReader<Date> {
         var day: Int = 0
         var bitMask = 0
         loop@while (true) {
-            when (nextRead()) {
+            val nextName = nextRead()
+            when (nextName) {
                 "year" -> {
                     year = readInt()
                     bitMask = bitMask or 0x01
@@ -51,6 +56,7 @@ object __DateObjectNotationReader : ObjectNotationReader<Date> {
                     bitMask = bitMask or 0x04
                 }
                 null -> break@loop
+                else -> skipRead(nextName)
             }
         }
         endRead()
@@ -68,7 +74,8 @@ object __PersonObjectNotationReader : ObjectNotationReader<Person> {
         var dead: Date? = null
         var bitMask = 0
         loop@while (true) {
-            when (nextRead()) {
+            val nextName = nextRead()
+            when (nextName) {
                 "name" -> {
                     name = readString()
                     bitMask = bitMask or 0x01
@@ -86,6 +93,7 @@ object __PersonObjectNotationReader : ObjectNotationReader<Person> {
                     bitMask = bitMask or 0x08
                 }
                 null -> break@loop
+                else -> skipRead(nextName)
             }
         }
         endRead()
