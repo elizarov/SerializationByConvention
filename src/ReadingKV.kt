@@ -66,7 +66,7 @@ private fun parse(s: String): Person = Parser(s).read(__PersonObjectNotationRead
 
 // ---- aux annotations ---
 
-annotation class Serializable(vararg val interfaces: KClass<*>)
+annotation class Serializable(vararg val serializers: KClass<*>)
 annotation class InjectSerializer
 
 // --- Parser ---

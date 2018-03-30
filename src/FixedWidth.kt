@@ -50,7 +50,7 @@ fun main(args: Array<String>) {
 
 // ---- aux annotations ---
 
-annotation class Serializable(vararg val interfaces: KClass<*>)
-annotation class SerializationQualifier(vararg val interfaces: KClass<*>)
+annotation class Serializable(vararg val serializers: KClass<*>)
+annotation class SerializationQualifier(vararg val annotations: KClass<*>)
 annotation class InjectSerializer
 

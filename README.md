@@ -38,9 +38,12 @@ It is designed to outline the general idea, and it is not a final design.
   * [XML and friends](#xml-and-friends)
   * [Protobuf and friends](#protobuf-and-friends)
   * [Reading Protobuf](#reading-protobuf)
+* [Metadata descriptors](#metadata-descriptors)
+  * [Compressed JSON](#compressed-json)
 * [Exotic formats](#exotic-formats)  
   * [Fixed width text files](#fixed-width-text-files)
 * [Summary](#summary)
+  * [Annotations](#annotations)
   * [Serializer interfaces](#serializer-interfaces)
   * [Operator functions](#operator-functions) 
   * [Qualifiers](#qualifiers)
@@ -154,7 +157,7 @@ to support generic types. So we take a slightly indirect path to having compiler
 > A use-case for such a genericity is shown in 
 [Serializing collections and arrays](#serializing-collections-and-arrays) section. 
 
-We start by defining a "writer" serialization interface with the prototype of that function 
+We start by defining a writer _serialization interface_ with the prototype of that function
 that the compiler is going to implement for us:
 
 ```kotlin
@@ -164,7 +167,8 @@ interface DataOutputWriter<in T> {
 ```
 
 > We assume here that `write` is the name that compiler recognizes. In the final design we might want
-to protect against accidental typos by using `operator` modifier on this extension `fun write` or some annotation. 
+to protect against accidental typos by using `operator` modifier on this extension `fun write` or
+require an explicit `SerializationOperator` annotation.
 
 We instruct the compiler to generate the implementation of this interface by adding an annotation
 to the class:
@@ -190,7 +194,7 @@ like `writeInt`. Note, that `writeUTF` is recognized as the most specific functi
 of the type of its argument, not because of it name.  
 Here `writeXXX` methods are  resolved on a Java type `java.io.DataOutput` and it makes sense to use purely 
 name-based match. For conventional methods defined in Kotlin classes and interfaces we might want to consider having 
-`operator` modifier or some annotation. 
+`operator` modifier or an explicit `SerializationOperator` annotation.
 
 > Here we ignore the complication that `java.io.DataOutput` has a "wrong" `write(Int)` method that should not
 be used for serialization. We assume that it is never resolved by the compiler as serialization `write` function
@@ -207,7 +211,7 @@ fun <T> DataOutput.write(obj: T, writer: DataOutputWriter<T>) = with(writer) { w
  
 This function is trivial and does not do anything, but delegates `write` invocation on `DataOutput` interface
 to the implementation of `DataOutputWriter`. It is marked with `@InjectSerializer` annotation in this example,
-because it is a truly "magical" function requiring a specialized compiler support beyond what one would expect
+because it is a truly magical function requiring a specialized compiler support beyond what one would expect
 from a function marked by `operator` modifier as show below. We can now write the following code:
 
 ```
@@ -267,7 +271,7 @@ discussion phase.
 ### Simple binary deserialization
 
 Deserializing an object with a simple binary format from `DataInput` requires us to take similar steps. 
-First we define a "reader" interface:
+First we define a reader _serialization interface_:
  
 ```kotlin
 interface DataInputReader<out T> {
@@ -275,7 +279,7 @@ interface DataInputReader<out T> {
 }
 ```
 
-Add this interface to a `Serializable` annotation to instruct compiler to implement it for us:
+Add this interface to a `Serializable` annotation to instruct compiler to implement it for us for a `Person` class:
 
 ```kotlin
 @Serializable(DataOutputWriter::class, DataInputReader::class)
@@ -297,7 +301,7 @@ object __PersonDataInputReader : DataInputReader<Person> {
 > In a similar way to writer, compiler looks up `readXXX` methods on the `DataInput` and uses their return type to 
 find the most specific ones for the statically known types of `Person` properties.
 
-Define "magic" reader function where compiler can add a reference to its implementation of 
+Define magic reader function where compiler can add a reference to its implementation of
 `DataInputReader` interface for us (and which will not be needed with type-classes):
 
 ```kotlin
@@ -415,7 +419,7 @@ It will not work, because compiler will not be able to resolve `writeXXX` method
 of writing a value of nullable `Date?` type.
 
 Let us define a function to write nullable value as an extension on `DataOutput`. We will write an 
-additional byte before a nullable type's value:
+additional byte before nullable type's value:
 
 ```kotlin
 @InjectSerializer
@@ -444,7 +448,7 @@ as compiler resolves them by the type of parameter (for `write`) and the type of
 but some type-class specific syntax instead, like 
 `fun <T : Any> DataOutput.writeNullable(obj: T?) with DataOutputWriter<T>` as an example of such syntax.
 
-These two extensions is all we need to support serialization of our updated `Person` class with a nullable 
+These two extensions is all we need to support serialization of our updated `Person` class with nullable
 `dead` property. See how compiler is using `writeNullable` and `readNullable` for `dead` property, since
 these are the only functions capable of writing/reading nullable types and they are marked 
 with `@InjectSerializer` so the last parameter is injected automatically:
@@ -501,19 +505,13 @@ are defined. Their definitions provide enough context. They refer to the `DataIn
 can be immediately analyzed, all their `writeXXX` and `readXXX` methods found, and, for each type they support,
 the corresponding trivial implementations can be derived. 
 The only thing that is lacking here is any kind of a signal to the compiler that it shall be done.
- 
-> This strongly suggests that `DataOutputWriter` and `DataInputReader`
-interfaces shall be marked with some dedicated annotation to provide such a signal to the compiler.
-This annotation would prompt compiler to emit the corresponding automatically generated implementations for all 
-the data types supported by `writeXXX` and `readXXX` functions.
 
-> But what happens with externally defined `writeXXX`/`readXXX` extensions to `DataOutput`/`DataInput` interfaces? 
-They can bring support for new writeable/readable data types. Every time such extensions are defined, compiler shall 
-generate the corresponding implementation of `DataOutputWriter` and `DataInputReader` interface for the
-corresponding data type. But how would compiler know about the interface it has to implement? This suggests that
-whenever an external `writeXXX`/`readXXX` extension is defined, it has to be somehow annotated with an 
-annotation that refers to `DataOutputWriter` or `DataInputReader` interface or some other alternative approach 
-shall be found. 
+> We can use `SerializationOperator` annotation for this purpose.
+This annotation would prompt compiler to emit the corresponding automatically generated implementation fo
+annotated `writeXXX` and `readXXX` functions. This annotation has to specify the corresponding
+serialization interface, because externally defined `writeXXX`/`readXXX` extensions to `DataOutput`/`DataInput` interfaces
+don't provide a way for compiler to figure out what interface to automatically implement.
+See also [Compressed JSON](#compressed-json) section for an alternative use of `SerializationOperator` annotation.
 
 Now `DataIO<MaybeInt>` implementation can be generated by compiler when it sees 
 `@Serializable(DataIO::class) class MaybeInt(val value: Int?)`:
@@ -1929,6 +1927,160 @@ the values of tag+type integer for each property.
 
 > You can find worked out example of code from this section in [src/ProtoRead.kt](src/ProtoRead.kt)
 
+## Metadata descriptors
+
+Some serialization formats require access to the metadata of the class
+that is being written or read _before_ the actual property values.
+In this chapter we will consider such cases and describe a generic
+umbrella mechanism that enables to generate efficient code for all
+of them.
+
+### Compressed JSON
+
+Let's continue example from [Lists as JSON arrays](#lists-as-JSON-arrays)
+section. We are serializing the following data model:
+
+```kotlin
+class Person(val name: String, val age: Int)
+class Persons(val list: List<Person>)
+```
+
+and get the following JSON-like result:
+
+```text
+{list:[{name:Elvis,age:42},{name:Jesus,age:33}]}
+```
+
+Here we clearly see that metadata about the class (its property names)
+get repeated for each instance of the class. It consumes a lot of extra bytes when lists are long.
+This is the problem with all keyed or tagged formats (including Protobuf).
+
+One of the solutions that is sometimes employed to alleviate this problem for JSON
+is write arrays of objects in a different way. First write an array of metadata
+(names of all the fields), then flatten the values of all object properties
+in the list into the same array. We want to get shorter representation, like this:
+
+```text
+{list:[name,age,Elvis,42,Jesus,33]}
+```
+
+In this format there are two different ways to represent an object. One
+representation is used when object is standalone, the other when it is
+a part of the list. Correspondingly, in addition to `ObjectNotationWriter` serializer
+interface that we've seen before, we add `CompressedWriter` interface
+that also provides access to _descriptor_ of the class that is being written:
+
+```kotlin
+interface ObjectNotationWriter<T> {
+    fun PrintWriter.write(obj: T)
+}
+
+interface CompressedWriter<T> {
+    val descriptor: List<String>
+    fun PrintWriter.write(obj: T)
+}
+```
+
+
+Here `val CompressedWriter.descriptor` is a convention and we are free to
+choose any type as the type the represents class descriptor. We use
+`List<String>`. Compiler has to know how to build think descriptor,
+so it resolves `buildDescriptor` operator with the corresponding
+return type that we declare like this:
+
+```kotlin
+fun buildDescriptor(block: MutableList<String>.() -> Unit): List<String> =
+    mutableListOf<String>().apply { block() }
+```
+
+From the signature of this operator compiler learns that desriptor builder
+type is `MutableList<String>` and it proceeds to resolve `describeXXX`
+operators on it in a similar way to how `writeXXX` and `readXXX` operators
+are resolved. Here we define just one `describeXXX` operator function
+that is _implicitly qualified_ with property name:
+
+```kotlin
+fun MutableList<String>.describeProperty(name: String) {
+    add(name)
+}
+```
+
+We annotate `Person` class to be serializable with `CompressedWriter` serializer:
+
+```kotlin
+@Serializable(CompressedWriter::class)
+class Person(val name: String, val age: Int)
+```
+
+And compiler generates the following implementation:
+
+```kotlin
+object __PersonCompressedWriter : CompressedWriter<Person> {
+    override val descriptor: List<String> = buildDescriptor {
+        describeProperty("name")
+        describeProperty("age")
+    }
+
+    override fun PrintWriter.write(obj: Person) {
+        writeCompressed(obj.name)
+        writeCompressed(obj.age)
+    }
+}
+```
+
+An additional challenge in this example is that both serializer interfaces
+(`CompressedWriter` and `ObjectNotationWriter`) are defined on the same output type `PrintWriter`.
+We need a way to disambiguate extensions on `PrintWriter` type between `CompressedWriter` and `ObjectNotationWriter`.
+So, `writeCompressed` operator is defined like this, with an explicit `SerializationOperator` annotation:
+
+```kotlin
+@SerializationOperator(CompressedWriter::class)
+fun PrintWriter.writeCompressed(value: Any?) {
+    print(",")
+    print(value)
+}
+```
+
+The rest of operators are marked correspondingly, too. Here is the most interesting operator,
+that provides a way to write `List` in `ObjectNotationWriter`:
+
+```kotlin
+@InjectSerializer
+@SerializationOperator(ObjectNotationWriter::class)
+fun <T> PrintWriter.writeList(obj: List<T>, writer: CompressedWriter<T>) {
+    print("[")
+    var sep = ""
+    for (name in writer.descriptor) {
+        print(sep)
+        print(name)
+        sep = ","
+
+    }
+    for (item in obj) {
+        write(item, writer)
+    }
+    print("]")
+}
+```
+
+So, we see here that this is a serialization operator for `ObjectNotationWriter` but it also
+has `@InjectSerializer` and the last parameter (to be injected) is of type `CompressedWriter`, which
+is a place where we switch from JSON-like object notation for writing object to compressed one.
+
+Compiler generates the following code for `ObjectNotationWriter<Persons>`:
+
+```kotlin
+object __PersonsObjectNotationWriter : ObjectNotationWriter<Persons> {
+    override fun PrintWriter.write(obj: Persons) {
+        beginWrite()
+        child("list").writeList(obj.list, __PersonCompressedWriter)
+        endWrite()
+    }
+}
+```
+
+> You can find worked out example of code from this section in [src/Compressed.kt](src/Compressed.kt)
+
 ## Exotic formats
 
 This chapter we'll cover some exotic format that are not widely used, yet useful in certain niche applications
@@ -2015,21 +2167,50 @@ Converting a string text to a list of objects becomes as simple as
 
 This chapter summarizes all introduced concepts.
 
+### Annotations
+
+These annotations can be used in end-user code (data model classes):
+
+* `annotation class Serializable(vararg val serializers: KClass<*>)` <br>
+  generates serializers of the specified type for the specified class.
+* `annotation class SerialName(name: String)` <br>
+  explicitly specifies name of the property or class for the purpose of serialization.
+
+There annotations are for the purpose of defining serialization formats:
+
+* `annotation class InjectSerializer` <br>
+  injects the compiler-generated  serializer and the value of an additional parameter of the function.
+* `annotation class SerializationOperator(vararg val serializers: KClass<*>)` <br>
+  explicitly marks the function as serialization operator for the corresponding serializer types.
+* `annotation class SerializationQualifier(vararg val annotations: KClass<*>)` <br>
+  explicitly qualified the function with the list of qualifier annotations
+
 ### Serializer interfaces
+
+Serializer interfaces are defined for every serialization format and are automatically implemented
+by compiler-generated code when class is annotated as `Serializable`.
 
 Serializer extension interface with an arbitrary name `S` must have a single unbounded generic type parameter
 (here named `T`) and may define the following functions (all are optional, at least one must be present):
 
 ```kotlin
 interface S<T> {
+    val descriptor: D
     fun I.read(): T 
     fun O.write(obj: T)
 }
 ``` 
 
-Here `I` is an input type, and `O` is an output type.
+Here:
+
+* `I` is an input type.
+* `O` is an output type.
+* `D` is metadata descriptor type.
 
 ### Operator functions
+
+The following operator functions can be used to define serialization format in
+addition to serializer interface that introduces input (`I`), output (`O`), and descriptor (`D`) types:
 
 | Signature                                    | Description / Example                                       
 | -------------------------------------------  | ---------------------
@@ -2047,6 +2228,8 @@ Here `I` is an input type, and `O` is an output type.
 | `I.skipRead([qualifiers])`                   | Skips over unsupported property                     <br> [Arbitrary order of keys](#arbitrary-order-of-keys)
 | `I.endRead([qualifiers])`                    | Ends reading composite object                       <br> [Reading JSON](#reading-json)
 | `I.convertXXX([qualifiers]): Q`              | Converts one set of qualifiers to another           <br> [Reading Protobuf](#reading-protobuf)
+| `buildDescriptor(B.() -> Unit): D`           | Builds class metadata descriptor                    <br> [Compressed JSON](#compressed-json)
+| `B.describeXXX([qualifiers])`                | Describes metadata about property                   <br> [Compressed JSON](#compressed-json)
 
 * `T` in `readXXX` and `writeXXX` can be an arbitrary type and those functions can be generic
   with complex dependencies between their generic parameter types and `T`.                                       
@@ -2054,17 +2237,31 @@ Here `I` is an input type, and `O` is an output type.
   built-in magic to indicate last field. Reference types must be nullable (like `String?`) and use `null` to signal
   the end, integer types use `-1` as a signal.
 * `Q` in `convertXXX` is an arbitrary explicit qualifier value type.
-                                                          
+* `B` in `buildDescriptor` and `describeXXX` is metadata descriptor builder type.
+
 ### Qualifiers 
 
 TBD
- 
+
 ### Open issues
 
-1. Should operators be marked with `operator` modifier, some other modifier or some annotation or different annotations?
+1. Should operators be required to be marked with `operator` modifier or `SerializationOperator` annotation?
    (see [Showcase](#showcase)).
    
-TBD       
+2. How can we ignore `DataOutput.write(Int)` method and make sure that `DataOutput.writeInt(Int)` is used?
+   Do we even need to care about `DataOutput` and similar 3rd party classes when inline classes would allow us to
+   define zero-cost wrappers on top of them with just the serialization operator functions that we needed?
+   (see [Showcase](#showcase)).
+
+3. Do we need meta-annotation for serialization to allow for user-defined `@Serializable` annotations for
+   specific serializer interfaces?
+   (see [Simple binary deserialization](#simple-binary-deserialization)).
+
+4. How shall we signal to compiler that automatic implementation of serializer interfaces for primitive types
+   shall be generated?
+   (see [Automatically derived implementations](#automatically-derived-implementations)).
+
+TBD
 
  
 

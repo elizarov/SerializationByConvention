@@ -62,5 +62,5 @@ private fun testRead(bytes: ByteArray) {
 
 // ---- aux annotations ---
 
-annotation class Serializable(vararg val interfaces: KClass<*>)
+annotation class Serializable(vararg val serializers: KClass<*>)
 annotation class InjectSerializer

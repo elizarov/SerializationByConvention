@@ -66,5 +66,5 @@ private fun testRead(map: Map<String,Any?>) {
 
 // ---- aux annotations ---
 
-annotation class Serializable(vararg val interfaces: KClass<*>)
+annotation class Serializable(vararg val serializers: KClass<*>)
 annotation class InjectSerializer
