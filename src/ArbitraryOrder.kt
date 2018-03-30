@@ -60,7 +60,7 @@ object __DateObjectNotationReader : ObjectNotationReader<Date> {
             }
         }
         endRead()
-        require(bitMask == 0x07)
+        require(bitMask == 0x07) { "Some required properties are missing" }
         return Date(year, month, day)
     }
 }
@@ -97,7 +97,7 @@ object __PersonObjectNotationReader : ObjectNotationReader<Person> {
             }
         }
         endRead()
-        require(bitMask == 0x0F)
+        require(bitMask == 0x0F) { "Some required properties are missing" }
         return Person(name!!, age, born!!, dead!!)
     }
 }

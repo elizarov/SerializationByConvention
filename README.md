@@ -1419,7 +1419,7 @@ fun ResultSet.readString(name: String): String = getString(name)
 ``` 
 
 An explicit `SerializationQualifier` annotation here results in substitution of `name` property from `DbName`
-annotation, falling back to implicitly qualified read function or to unqualified read function when `DbName`
+annotation, falling back to implicitly qualified read function or to an unqualified read function when `DbName`
 annotation is not present.
 
 Databases have native support for dates, so we can provide a specialized reading function for `Date`:
@@ -1429,7 +1429,8 @@ Databases have native support for dates, so we can provide a specialized reading
 fun ResultSet.readDate(name: String): Date = ...
 ```
 
-It gets precedence over a generic `read` function.
+It gets precedence over a generic `read` function. So a property that is considered to be complex object in
+one format can be considered to be primitive in another.
 
 ### Arbitrary order of keys
 
@@ -1475,11 +1476,18 @@ object __PersonObjectNotationReader : ObjectNotationReader<Person> {
             }
         }
         endRead()
-        require(bitMask == 0x0F)
+        require(bitMask == 0x0F) { "Some required properties are missing" }
         return Person(name!!, age, born!!, dead!!)
     }
 }
 ```
+
+> When compiler resolves `nextRead` it discovers that this function has no _explicit qualifier_, but its return
+type is `String?`, so it is considered to be _implicitly qualified_ with `SerialName` and thus the resulting string
+is recognized as being the name of the property, so `when { ... }` block is generated matching on the
+names of the properties. All `readXXX` invocations inside the branches of `when` are resolved and generated
+in the usual way. They are all _unqualified_ in this example, but they could have been qualified and/or
+could have used `child` operator if it was present.
 
 Now the whole generated `read` function is a loop that collects parsed values in local variables and updates
 `bitMask` to track which properties were read. This `bitMask` will be used to fill in values for optional 
@@ -1666,13 +1674,13 @@ Instead, all writing functions to support Protobuf are qualified and specialized
 ```kotlin
 @SerializationQualifier(Tag::class)
 fun ProtoOutput.writeVarint(tag: Int, value: Int) {
-    emitVarint(tag shl 3)
+    emitTagType(tag, 0)
     emitVarint(value)
 }
 
 @SerializationQualifier(Tag::class)
 fun ProtoOutput.writeString(tag: Int, value: String) {
-    emitVarint(tag shl 3 or 2)
+    emitTagType(tag, 2)
     emitBytes(value.toByteArray(Charsets.UTF_8))
 }
 ```
@@ -1697,12 +1705,13 @@ write embedded message into buffer, then patch the buffer to include size
 ```kotlin
 @SerializationQualifier(Tag::class)
 @InjectSerializer
-fun <T> ProtoOutput.write(tag: Int, obj: T, writer: ProtoWriter<T>) {
-    emitVarint(tag shl 3 or 2)
-    val pos = this.size
+fun <T> ProtoOutput.writeEmbedded(tag: Int, obj: T, writer: ProtoWriter<T>) {
+    emitTagType(tag, 2)
+    val offset = this.size
     emit(0) // reserve a byte
     write(obj, writer)
-    patchVarint(pos, this.size - pos - 1)
+    val length = this.size - offset - 1 // actual length of embedded message
+    patchVarint(offset, length)
 }
 ```
 
@@ -1725,11 +1734,22 @@ object __PersonProtoWriter : ProtoWriter<Person> {
     override fun ProtoOutput.write(obj: Person) {
         writeString(1, obj.name)
         writeVarint(2, obj.age)
-        write(3, obj.born, __DateProtoWriter)
-        write(4, obj.dead, __DateProtoWriter)
+        writeEmbedded(3, obj.born, __DateProtoWriter)
+        writeEmbedded(4, obj.dead, __DateProtoWriter)
     }
 }
 ```
+
+Note, that we've picked `writeEmbedded` name to avoid confusion with
+the usual top-level object writing function:
+
+```kotlin
+@InjectSerializer
+fun <T> ProtoOutput.write(obj: T, writer: ProtoWriter<T>) = with(writer) { write(obj) }
+```
+
+> Compiler resolves `writeEmbedded` as a more specific function in generated code,
+but serializing top-level object is performed with `write` .
 
 This gets us Protobuf bytes that can be decoded in other
 languages using the following proto file:
@@ -1755,40 +1775,159 @@ message Person {
 
 ### Reading Protobuf
 
-Reading Protobuf is possible using `nextRead` operator with the following signature:
+Reading Protobuf is possible using _explicitly qualified_
+`nextRead` operator with the following signature:
 
 ```
 @SerializationQualifier(Tag::class)
 fun <T> ProtoInput.nextRead(): Int
 ```
 
-The value of `tag` property from `@Tag` qualifier annotation "spills out" into the result
-of `nextRead` function. The result is `-1` when the end is reached.
+The value of `tag` property from `@Tag` qualifier annotation becomes the result
+of `nextRead` function. By convention, for integer types, the result is `-1` when the
+end of the object is reached.
 
 However, the Protobuf format bundles together both tag and wire type.
 In a Protobuf-specific parsing code this tag+type integer is switched
 on, marking sure that both type and tag match, or else a separate function
 can use the type to skip unknown field.
 
-We can work around it in the following fashion. Protobuf `nextRead`
+We can try to work around it in the following fashion. Protobuf `nextRead`
 implementation reads tag+type integer, stores type in its state, and
-returns tag. Then compiler-generate class-specific reader performs
+returns tag. Then compiler-generated code performs
 `when(nextTag) { ... }` and invokes the corresponding `readXXX` function.
 This function has to check that the wire type that was previously stored
-by `nextRead` is indeed the one it expected and report an error if not.
-The problem is that in Protobuf it is not an error.
-The value should have been skipped if the type does not match.
-We cannot easily mimic this behavior with this approach, because invoked
-`readXXX` has to return something. Moreover,
-saving auxiliary data like wire type to the field in the parser to check
-it later would degrade performance problem in tight parsing loops.
-For maximal performance parsing state has to be in local variables.
+by `nextRead` is indeed the one it expected and report an error if it is not.
+
+The problem is that in real Protobuf wire type mismatch is not an error.
+The value should have been skipped if the property wire type is not equal to the expected one.
+We cannot easily mimic this behavior with this `nextTag` approach, because invoked
+`readXXX` has to return something. 
 
 > There is a solution to this conundrum if `nextRead` function looks at
-metadata descriptor of the class and react appropriately to missing
-fields, but it further reduces performance versus an optimized implementation.
+the metadata descriptor of the class and reacts appropriately to missing
+fields, but this extra indirection would reduce performance versus an
+optimized implementation.
 
-TBD
+We take a different approach that would produce generated code that is
+similar to the one produced by the Protobuf-specific code generator.
+
+We define private qualifier annotations for pairs of tag and type
+as well as for wire types:
+
+```kotlin
+private annotation class TagType(val tagType: Int)
+private annotation class WireType(val type: Int)
+```
+
+They are `private` to make sure that they are not accidentally placed
+on properties in a user-defined code. They are intended only for use by
+the Protobuf format definition and parsing code. User-defined code
+should be annotated with `@Tag` annotations.
+
+We introduce an _explicitly qualified_ `nextRead` operator function
+that returns an integer with a pair of tag and type:
+                                                                 
+```kotlin
+@SerializationQualifier(TagType::class)
+fun ProtoInput.nextRead(): Int =
+    if (hasMore()) fetchVarint() else -1
+```
+
+Compiler resolves `nextRead` and knows that is should generate
+`when(nextTagType) { ... }` on the value of `TagType` for each property.
+However, there is no `TagType` annotation on properties, so
+compiler tries to resolve `convertXXX` operator function and finds
+this one:
+
+```kotlin
+@SerializationQualifier(Tag::class, WireType::class, TagType::class)
+fun convertToTagType(tag: Int, type: Int): Int = (tag shl 3) or type
+```
+
+> This `convertXXX` operator is by far the most baroque in the serialization design.
+It does not have to be supported on day one, but it is included here for
+completeness to show the roadmap to the most efficient support for
+parsing Protobuf-like formats.
+
+Here `@SerializationQualifier` annotation explains the meaning of
+of this function parameters and return type &mdash; given the
+value of `@Tag` and `@WireType` annotations we can get the value of
+`@TagType` annotation.
+
+Each property in our classes is annotated with `@Tag`. But there
+is no `@WireType`. The next step is to resolve `writeXXX` operator
+for each property in the usual way. There we find `@WireType` annotations:
+
+```kotlin
+@WireType(0) fun ProtoInput.readVarint(): Int { /* ... */ }
+@WireType(2) fun ProtoInput.readString(): String { /* ... */ }
+
+@InjectSerializer
+@WireType(2)
+fun <T> ProtoInput.readEmbedded(reader: ProtoReader<T>): T {
+```
+
+Now, for each property compiler knows both `@Tag` and `@WireType`, so
+it can apply `convertToTagType` to learn the value of `@TagType` and
+generate the code for the corresponding serializers:
+
+```kotlin
+object __PersonProtoReader : ProtoReader<Person> {
+    override fun ProtoInput.read(): Person {
+        var name: String? = null
+        var age: Int = 0
+        var born: Date? = null
+        var dead: Date? = null
+        var bitMask = 0
+        loop@while (true) {
+            val nextTagType = nextRead()
+            when (nextTagType) {
+                convertToTagType(1, 2) -> {
+                    name = readString()
+                    bitMask = bitMask or 0x01
+                }
+                convertToTagType(2, 0) -> {
+                    age = readVarint()
+                    bitMask = bitMask or 0x02
+                }
+                convertToTagType(3, 2) -> {
+                    born = readEmbedded(__DateProtoReader)
+                    bitMask = bitMask or 0x04
+                }
+                convertToTagType(4, 2) -> {
+                    dead = readEmbedded(__DateProtoReader)
+                    bitMask = bitMask or 0x08
+                }
+                -1 -> break@loop
+                else -> skipRead(nextTagType)
+            }
+        }
+        require(bitMask == 0x0F) { "Some required properties are missing" }
+        return Person(name!!, age, born!!, dead!!)
+    }
+}
+```
+
+As we see from this code, we can qualify `skipRead` operator with `TagType`, so we
+can use it for the implementation of the corresponding function:
+
+```kotlin
+@SerializationQualifier(TagType::class)
+fun ProtoInput.skipRead(tagType: Int) { /* ... */ }
+```
+
+> Unfortunately, the reading code that is generated in this way will
+not be efficiently compiled by the current version of Kotlin compiler as
+of writing this document. Even if `convertToTagType` has `inline` modifier
+its constant parameters are not propagated into its body
+(see [KT-7774](https://youtrack.jetbrains.com/issue/KT-7774))
+and the whole `when` statement is compiled into a chain of `if` statements that would not
+be as efficient as hand-rolled `switch` that is produced by native
+Protobuf code generator which precomputes and puts into the generated source
+the values of tag+type integer for each property.
+
+> You can find worked out example of code from this section in [src/ProtoRead.kt](src/ProtoRead.kt)
 
 ## Exotic formats
 
@@ -1907,12 +2046,14 @@ Here `I` is an input type, and `O` is an output type.
 | `I.nextRead([qualifiers]): R`                | Returns next property to read                       <br> [Arbitrary order of keys](#arbitrary-order-of-keys)
 | `I.skipRead([qualifiers])`                   | Skips over unsupported property                     <br> [Arbitrary order of keys](#arbitrary-order-of-keys)
 | `I.endRead([qualifiers])`                    | Ends reading composite object                       <br> [Reading JSON](#reading-json)
-                                       
-* `T` in `readXXX` and `writeXXX` operator function can be an arbitrary type and those functions can be generic
+| `I.convertXXX([qualifiers]): Q`              | Converts one set of qualifiers to another           <br> [Reading Protobuf](#reading-protobuf)
+
+* `T` in `readXXX` and `writeXXX` can be an arbitrary type and those functions can be generic
   with complex dependencies between their generic parameter types and `T`.                                       
-* `R` in `nextRead()` operator function works like the last explicit or implicit qualifier parameter with some
+* `R` in `nextRead` works like the last explicit or implicit qualifier parameter with some
   built-in magic to indicate last field. Reference types must be nullable (like `String?`) and use `null` to signal
   the end, integer types use `-1` as a signal.
+* `Q` in `convertXXX` is an arbitrary explicit qualifier value type.
                                                           
 ### Qualifiers 
 

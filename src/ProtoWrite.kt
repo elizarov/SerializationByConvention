@@ -18,6 +18,23 @@ data class Person(
     @Tag(3) val born: Date,
     @Tag(4) val dead: Date)
 
+/*
+syntax = "proto3";
+
+message Date {
+    int32 year = 1;
+    int32 month = 2;
+    int32 date = 3;
+}
+
+message Person {
+    string name = 1;
+    int32 age = 2;
+    Date born = 3;
+    Date dead = 4;
+}
+*/
+
 interface ProtoWriter<T> {
     fun ProtoOutput.write(obj: T)
 }
@@ -27,24 +44,25 @@ fun <T> ProtoOutput.write(obj: T, writer: ProtoWriter<T>) = with(writer) { write
 
 @SerializationQualifier(Tag::class)
 fun ProtoOutput.writeVarint(tag: Int, value: Int) {
-    emitVarint(tag shl 3)
+    emitTagType(tag, 0)
     emitVarint(value)
 }
 
 @SerializationQualifier(Tag::class)
 fun ProtoOutput.writeString(tag: Int, value: String) {
-    emitVarint(tag shl 3 or 2)
+    emitTagType(tag, 2)
     emitBytes(value.toByteArray(Charsets.UTF_8))
 }
 
 @SerializationQualifier(Tag::class)
 @InjectSerializer
-fun <T> ProtoOutput.write(tag: Int, obj: T, writer: ProtoWriter<T>) {
-    emitVarint(tag shl 3 or 2)
-    val pos = this.size
+fun <T> ProtoOutput.writeEmbedded(tag: Int, obj: T, writer: ProtoWriter<T>) {
+    emitTagType(tag, 2)
+    val offset = this.size
     emit(0) // reserve a byte
     write(obj, writer)
-    patchVarint(pos, this.size - pos - 1)
+    val length = this.size - offset - 1 // actual length of embedded message
+    patchVarint(offset, length)
 }
 
 object __DateProtoWriter : ProtoWriter<Date> {
@@ -59,8 +77,8 @@ object __PersonProtoWriter : ProtoWriter<Person> {
     override fun ProtoOutput.write(obj: Person) {
         writeString(1, obj.name)
         writeVarint(2, obj.age)
-        write(3, obj.born, __DateProtoWriter)
-        write(4, obj.dead, __DateProtoWriter)
+        writeEmbedded(3, obj.born, __DateProtoWriter)
+        writeEmbedded(4, obj.dead, __DateProtoWriter)
     }
 }
 
@@ -108,22 +126,24 @@ class ProtoOutput() {
     }
 
     private tailrec fun varintLength(x: Int, acc: Int = 0): Int {
-        val lo = x and 0x7f
         val hi = x ushr 7
         if (hi == 0) return acc + 1
         return varintLength(hi, acc + 1)
     }
 
-    private tailrec fun storeVarint(pos: Int, x: Int) {
+    private tailrec fun storeVarint(offset: Int, x: Int) {
         val lo = x and 0x7f
         val hi = x ushr 7
         if (hi == 0) {
-            buf[pos] = lo.toByte()
+            buf[offset] = lo.toByte()
             return
         }
-        buf[pos] = (lo or 0x80).toByte()
-        storeVarint(pos + 1, hi)
+        buf[offset] = (lo or 0x80).toByte()
+        storeVarint(offset + 1, hi)
     }
+
+    fun emitTagType(tag: Int, type: Int) =
+        emitVarint(tag shl 3 or type)
 
     fun emitVarint(x: Int) {
         val n = varintLength(x)
@@ -132,11 +152,11 @@ class ProtoOutput() {
         size += n
     }
 
-    fun patchVarint(pos: Int, x: Int) {
+    fun patchVarint(offset: Int, x: Int) {
         val n = varintLength(x)
         ensure(size + n - 1)
-        if (n > 1) System.arraycopy(buf, pos + 1, buf, pos + n, size - pos - 1)
-        storeVarint(pos, x)
+        if (n > 1) System.arraycopy(buf, offset + 1, buf, offset + n, size - offset - 1)
+        storeVarint(offset, x)
         size += n - 1
     }
 
