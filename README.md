@@ -40,6 +40,7 @@ It is designed to outline the general idea, and it is not a final design.
   * [Reading Protobuf](#reading-protobuf)
 * [Metadata descriptors](#metadata-descriptors)
   * [Compressed JSON](#compressed-json)
+  * [Produce proto file](#produce-proto-file)
 * [Exotic formats](#exotic-formats)  
   * [Fixed width text files](#fixed-width-text-files)
 * [Summary](#summary)
@@ -2081,6 +2082,111 @@ object __PersonsObjectNotationWriter : ObjectNotationWriter<Persons> {
 
 > You can find worked out example of code from this section in [src/Compressed.kt](src/Compressed.kt)
 
+### Produce proto file
+
+Let's take a look at [Protobuf and friends](#protobuf-and-friends) section where code to write class in Protobuf format
+was shown. In order to read Protobuf from another language we need `.proto` file with metadata about
+the classes. Let us generate this `.proto` file based on the `@Tag` annotated data model classes
+from that section.
+
+> We can use just `val descriptor` and `buildDescriptor` that was shown in [Compressed JSON](#compressed-json) section
+to capture metadata about the class to produce the desired `.proto` file, but it means that
+all this metadata is going to be stored in runtime heap, while we need it only for an auxiliary purpose
+of printing `.proto` file.
+
+We amend `ProtoWriter` interface with `descriptor` value and `describe` function:
+
+```kotlin
+interface ProtoWriter<T> {
+    val descriptor: String
+    fun ProtoDescriber.describe()
+    fun ProtoOutput.write(obj: T)
+}
+```
+
+The `descriptor` property defines `String` as the metadata type so the corresponding `buildDescriptor(...): String` is resolved:
+
+```kotlin
+fun buildDescriptor(block: StringBuilder.() -> Unit): String = buildString(block)
+```
+
+This signature implies that descriptor builder type here is `StringBuilder`, so operator functions
+on this builder types are resolved. There is just one &mdash; qualified `beginDescribe` function that works similarly to
+`beginRead` and `beginWrite` and is used to capture metadata about the class itself.
+In our case it is the class name that we need:
+
+```kotlin
+fun StringBuilder.beginDescribe(name: String)  {
+    append(name)
+}
+```
+
+It results in the following generated code for `ProtoWriter<Person>.descriptor`:
+
+```kotlin
+object __PersonProtoWriter : ProtoWriter<Person> {
+    override val descriptor: String = buildDescriptor {
+        beginDescribe("Person")
+    }
+    // to be continued ...
+}
+```
+
+We also have `ProtoWriter.describe` operator and it introduces a different
+descriptor builder type `ProtoDescriber`. This types defines a number of
+`describeXXX` operators as well as qualified `beginDescribe` and unqualified `endDescribe`,
+so that the following implementation is generated:
+
+```kotlin
+object __PersonProtoWriter : ProtoWriter<Person> {
+    override val descriptor: String = TODO() // as before
+    
+    override fun ProtoDescriber.describe() {
+        beginDescribe("Person")
+        describeString<String>(1, "name")
+        describeVarint<Int>(2, "age")
+        describeEmbedded<Date>(3, "born", __DateProtoWriter)
+        describeEmbedded<Date>(4, "dead", __DateProtoWriter)
+        endDescribe()
+    }
+
+    override fun ProtoOutput.write(obj: Person) = TODO() // as before
+}
+```
+
+Here we see the usage of `describeXXX` operator functions. Unlike `readXXX` and `writeXXX` their
+resolution cannot be driven by parameter and return types, as `describe` does
+not operate on an instance that is being read or is being written. Instead,
+resolution relies on convention that the first type parameter of a function (if any)
+shall accept the type of the property that is being described, like this:
+
+```kotlin
+@SerializationQualifier(Tag::class, SerialName::class)
+fun <T : Int> ProtoDescriber.describeVarint(tag: Int, name: String) =
+    describeProp(tag, name, "int32")
+```
+
+> We could also capture the class of the property using a `reified` type parameter as needed.
+
+With the corresponding implementations of these operators we can get `.proto` file printed:
+
+```proto
+message Person {
+    string name = 1;
+    int32 age = 2;
+    Date born = 3;
+    Date dead = 4;
+}
+
+message Date {
+    int32 year = 1;
+    int32 month = 2;
+    int32 day = 3;
+}
+```
+
+> You can find worked out example of code from this section in [src/ProtoDescribe.kt](src/ProtoDescribe.kt)
+
 ## Exotic formats
 
 This chapter we'll cover some exotic format that are not widely used, yet useful in certain niche applications
@@ -2191,11 +2297,13 @@ Serializer interfaces are defined for every serialization format and are automat
 by compiler-generated code when class is annotated as `Serializable`.
 
 Serializer extension interface with an arbitrary name `S` must have a single unbounded generic type parameter
-(here named `T`) and may define the following functions (all are optional, at least one must be present):
+(here named `T`) and may define the following functions (all are optional, at least one must be present,
+the same function may be present multiple times for different types):
 
 ```kotlin
 interface S<T> {
     val descriptor: D
+    fun B.describe()
     fun I.read(): T 
     fun O.write(obj: T)
 }
@@ -2206,11 +2314,13 @@ Here:
 * `I` is an input type.
 * `O` is an output type.
 * `D` is metadata descriptor type.
+* `B` is descriptor builder type.
 
 ### Operator functions
 
 The following operator functions can be used to define serialization format in
-addition to serializer interface that introduces input (`I`), output (`O`), and descriptor (`D`) types:
+addition to serializer interface that introduces input (`I`), output (`O`),
+descriptor (`D`), and builder (`B`) types:
 
 | Signature                                    | Description / Example                                       
 | -------------------------------------------  | ---------------------
@@ -2230,6 +2340,9 @@ addition to serializer interface that introduces input (`I`), output (`O`), and 
 | `I.convertXXX([qualifiers]): Q`              | Converts one set of qualifiers to another           <br> [Reading Protobuf](#reading-protobuf)
 | `buildDescriptor(B.() -> Unit): D`           | Builds class metadata descriptor                    <br> [Compressed JSON](#compressed-json)
 | `B.describeXXX([qualifiers])`                | Describes metadata about property                   <br> [Compressed JSON](#compressed-json)
+| `B.beginDescribe([qualifiers])`              | Begins description of composite object              <br> [Produce proto file](#produce-proto-file)
+| `B.nextDescribe([qualifiers])`               | Continues description of object (between fields)    <br> TBD
+| `B.endDescribe([qualifiers])`                | Ends description of composite object                <br> [Produce proto file](#produce-proto-file)
 
 * `T` in `readXXX` and `writeXXX` can be an arbitrary type and those functions can be generic
   with complex dependencies between their generic parameter types and `T`.                                       
@@ -2237,7 +2350,6 @@ addition to serializer interface that introduces input (`I`), output (`O`), and 
   built-in magic to indicate last field. Reference types must be nullable (like `String?`) and use `null` to signal
   the end, integer types use `-1` as a signal.
 * `Q` in `convertXXX` is an arbitrary explicit qualifier value type.
-* `B` in `buildDescriptor` and `describeXXX` is metadata descriptor builder type.
 
 ### Qualifiers 
 

@@ -1,5 +1,7 @@
-package protoWrite
+package protoDescribe
 
+import java.io.*
+import java.util.*
 import kotlin.reflect.*
 
 annotation class Tag(val tag: Int)
@@ -36,8 +38,40 @@ message Person {
 */
 
 interface ProtoWriter<T> {
+    val descriptor: String
+    fun ProtoDescriber.describe()
     fun ProtoOutput.write(obj: T)
 }
+
+// --- descriptor: String ---
+
+fun buildDescriptor(block: StringBuilder.() -> Unit): String = buildString(block)
+
+fun StringBuilder.beginDescribe(name: String)  {
+    append(name)
+}
+
+// --- PrintWriter.describe() --
+
+@InjectSerializer
+fun <T> ProtoDescriber.describe(desc: ProtoWriter<T>) = with(desc) { describe() }
+
+@SerializationQualifier(Tag::class, SerialName::class)
+fun <T : Int> ProtoDescriber.describeVarint(tag: Int, name: String) =
+    describeProp(tag, name, "int32")
+
+@SerializationQualifier(Tag::class, SerialName::class)
+fun <T : String> ProtoDescriber.describeString(tag: Int, name: String) =
+    describeProp(tag, name, "string")
+
+@SerializationQualifier(Tag::class, SerialName::class)
+@InjectSerializer
+fun <T> ProtoDescriber.describeEmbedded(tag: Int, name: String, desc: ProtoWriter<T>) {
+    describeProp(tag, name, desc.descriptor)
+    push(desc)
+}
+
+// -- ProtoOutput.write(obj: T)
 
 @InjectSerializer
 fun <T> ProtoOutput.write(obj: T, writer: ProtoWriter<T>) = with(writer) { write(obj) }
@@ -66,6 +100,18 @@ fun <T> ProtoOutput.writeEmbedded(tag: Int, obj: T, writer: ProtoWriter<T>) {
 }
 
 object __DateProtoWriter : ProtoWriter<Date> {
+    override val descriptor: String = buildDescriptor {
+        beginDescribe("Date")
+    }
+
+    override fun ProtoDescriber.describe() {
+        beginDescribe("Date")
+        describeVarint<Int>(1, "year")
+        describeVarint<Int>(2, "month")
+        describeVarint<Int>(3, "day")
+        endDescribe()
+    }
+
     override fun ProtoOutput.write(obj: Date) {
         writeVarint(1, obj.year)
         writeVarint(2, obj.month)
@@ -74,6 +120,19 @@ object __DateProtoWriter : ProtoWriter<Date> {
 }
 
 object __PersonProtoWriter : ProtoWriter<Person> {
+    override val descriptor: String = buildDescriptor {
+        beginDescribe("Person")
+    }
+
+    override fun ProtoDescriber.describe() {
+        beginDescribe("Person")
+        describeString<String>(1, "name")
+        describeVarint<Int>(2, "age")
+        describeEmbedded<Date>(3, "born", __DateProtoWriter)
+        describeEmbedded<Date>(4, "dead", __DateProtoWriter)
+        endDescribe()
+    }
+
     override fun ProtoOutput.write(obj: Person) {
         writeString(1, obj.name)
         writeVarint(2, obj.age)
@@ -85,6 +144,9 @@ object __PersonProtoWriter : ProtoWriter<Person> {
 // --- test code ---
 
 fun main(args: Array<String>) {
+    // print .proto
+    ProtoDescriber().printProto(__PersonProtoWriter)
+    // write a person
     val output = ProtoOutput()
     val person = Person("Elvis", 42,
         born = Date(1935, 1, 8),
@@ -99,7 +161,38 @@ fun main(args: Array<String>) {
 
 annotation class Serializable(vararg val serializers: KClass<*>)
 annotation class SerializationQualifier(vararg val annotations: KClass<*>)
+annotation class SerialName(val name: String)
 annotation class InjectSerializer
+
+// --- describer --
+
+class ProtoDescriber(val out: PrintStream = System.out) {
+    private val seen = HashSet<ProtoWriter<*>>()
+    private val queue = ArrayDeque<ProtoWriter<*>>()
+
+    fun push(desc: ProtoWriter<*>) {
+        if (seen.add(desc)) queue += desc
+    }
+
+    fun printProto(desc: ProtoWriter<*>) {
+        push(desc)
+        while (!queue.isEmpty())
+            describe(queue.poll())
+    }
+
+    fun beginDescribe(name: String) {
+        out.println("message $name {")
+    }
+
+    fun describeProp(tag: Int, name: String, type: String) {
+        out.println("    $type $name = $tag;")
+    }
+
+    fun endDescribe() {
+        out.println("}")
+        out.println()
+    }
+}
 
 // --- proto ---
 
