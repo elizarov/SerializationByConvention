@@ -8,6 +8,11 @@ like `KInput` and `KOutput`, but adapts to arbitrary input/output APIs via exten
 > Note: All function and annotation names in this document are tentative.
 It is designed to outline the general idea, and it is not a final design. 
 
+**STATUS UPDATE:** This design is not finished. It does not cover many real-life challenges like inheritance
+hierarchies, stateful mutable classes with private state and delegates, etc. However, this design is _already_
+too complex, so it is unlikely that it is ever going to be implemented. This is a useful document, though,
+because it provides many worked-out serialization use-cases.
+
 ## Table of contents
 
 * [Introduction](#introduction)
